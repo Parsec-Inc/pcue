@@ -25,7 +25,7 @@ pub const KEY_STEP_DELAY: Duration = Duration::from_millis(12);
 pub const CLICK_MOVE_SETTLE: Duration = Duration::from_millis(60);
 
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
-pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(250);
+pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
 pub const RECORD_SLEEP_ROUNDING_MS: u128 = 100;
 pub const IGNORED_DEVICE_PREFIXES: &[&str] = &["pwboot", "ydotoold"];
 
