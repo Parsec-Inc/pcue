@@ -39,7 +39,11 @@ enum Command {
     /// Abre a interface interativa (padrão)
     Tui,
     /// Processo de fundo que dispara as rotinas agendadas
-    Daemon,
+    Daemon {
+        /// Reinício após atualização do binário: não repete o evento login
+        #[arg(long, hide = true)]
+        restarted: bool,
+    },
     /// Executa uma rotina agora
     Run {
         routine: String,
@@ -79,7 +83,7 @@ fn main() -> Result<()> {
     let path = config_path()?;
     match cli.command.unwrap_or(Command::Tui) {
         Command::Tui => tui::run(path),
-        Command::Daemon => daemon::run_daemon(),
+        Command::Daemon { restarted } => daemon::run_daemon(restarted),
         Command::Run {
             routine,
             trigger,

@@ -119,6 +119,7 @@ pub struct App {
     pub installed: bool,
     pub hyprland: bool,
     editor_draft: Option<String>,
+    children: Vec<std::process::Child>,
     external: Option<External>,
     last_refresh: Instant,
     quit: bool,
@@ -142,6 +143,7 @@ impl App {
             installed: install::is_installed(),
             hyprland: crate::hypr::in_session(),
             editor_draft: None,
+            children: Vec::new(),
             external: None,
             last_refresh: Instant::now(),
             quit: false,
@@ -172,6 +174,7 @@ impl App {
             return;
         }
         self.last_refresh = Instant::now();
+        self.children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
         self.daemon_up = daemon::is_running();
         let modified = history::modified();
         if modified != self.history_modified {
@@ -635,7 +638,13 @@ impl App {
     fn run_selected(&mut self) {
         let Some(name) = self.routine().map(|r| r.name.clone()) else { return };
         match spawn_run(&name, "manual", TUI_RUN_DELAY_MS) {
-            Ok(_) => self.info(format!("'{name}' começa em {:.1}s (L mostra o log)", TUI_RUN_DELAY_MS as f64 / 1000.0)),
+            Ok(child) => {
+                self.children.push(child);
+                self.info(format!(
+                    "'{name}' começa em {:.1}s (L mostra o log)",
+                    TUI_RUN_DELAY_MS as f64 / 1000.0
+                ));
+            }
             Err(err) => self.error(format!("falha ao executar: {err}")),
         }
     }

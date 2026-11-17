@@ -124,6 +124,17 @@ impl Hypr {
         self.dispatch(&dispatch)
     }
 
+    /// A sessão está bloqueada (qualquer tela de bloqueio ext-session-lock)?
+    pub fn is_locked(&self) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Locked {
+            locked: bool,
+        }
+        let reply: Locked = serde_json::from_str(&self.request("j/locked")?)
+            .context("resposta inesperada de j/locked")?;
+        Ok(reply.locked)
+    }
+
     /// Posição global do cursor.
     pub fn cursor_pos(&self) -> Result<(i32, i32)> {
         let pos: CursorPos = serde_json::from_str(&self.request("j/cursorpos")?)

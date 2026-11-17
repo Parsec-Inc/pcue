@@ -17,7 +17,8 @@ use crate::script::parse_duration;
 use crate::utils::{config_path, daemon_socket, log};
 
 /// Processo de fundo: dispara rotinas por evento e horário.
-pub fn run_daemon() -> Result<()> {
+pub fn run_daemon(restarted: bool) -> Result<()> {
+    let binary = Binary::current()?;
     let socket = daemon_socket()?;
     if is_running() {
         bail!("o daemon já está rodando");
@@ -34,14 +35,19 @@ pub fn run_daemon() -> Result<()> {
     spawn_watcher("logind", sender.clone(), watch_logind);
     if crate::hypr::in_session() {
         spawn_watcher("hyprland", sender.clone(), watch_hyprland);
+        spawn_watcher("bloqueio", sender.clone(), watch_lock);
     }
     drop(sender);
 
     let path = config_path()?;
     let mut daemon = Daemon::new(path)?;
-    log("daemon iniciado");
-    std::thread::sleep(Duration::from_millis(daemon.config.settings.startup_delay_ms));
-    daemon.fire_event("login");
+    if restarted {
+        log("daemon reiniciado com o binário novo");
+    } else {
+        log("daemon iniciado");
+        std::thread::sleep(Duration::from_millis(daemon.config.settings.startup_delay_ms));
+        daemon.fire_event("login");
+    }
 
     loop {
         match receiver.recv_timeout(DAEMON_TICK) {
@@ -52,6 +58,38 @@ pub fn run_daemon() -> Result<()> {
         daemon.reload_if_changed();
         daemon.tick_schedules();
         daemon.reap();
+        if binary.changed() {
+            log("binário atualizado, reiniciando o daemon");
+            return Err(binary.restart());
+        }
+    }
+}
+
+/// Executável do daemon, para se reiniciar quando for atualizado.
+struct Binary {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+impl Binary {
+    fn current() -> Result<Self> {
+        let path = std::env::current_exe()?;
+        let modified = mtime(&path);
+        Ok(Self { path, modified })
+    }
+
+    fn changed(&self) -> bool {
+        let now = mtime(&self.path);
+        now.is_some() && now != self.modified
+    }
+
+    /// Substitui o processo pelo binário novo; só retorna em caso de erro.
+    fn restart(&self) -> anyhow::Error {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&self.path)
+            .args(["daemon", "--restarted"])
+            .exec();
+        anyhow!("falha ao reiniciar o daemon: {err}")
     }
 }
 
@@ -352,6 +390,20 @@ fn current_session(
         }
     };
     reply.body().deserialize().ok()
+}
+
+/// Bloqueio e desbloqueio pelo estado de session lock do Hyprland.
+fn watch_lock(sender: Sender<String>) -> Result<()> {
+    let hypr = crate::hypr::Hypr::connect()?;
+    let mut locked = hypr.is_locked()?;
+    loop {
+        std::thread::sleep(DAEMON_TICK);
+        let now = hypr.is_locked()?;
+        if now != locked {
+            locked = now;
+            sender.send(if now { "lock" } else { "unlock" }.to_string())?;
+        }
+    }
 }
 
 /// Monitores conectados e desconectados pelo socket de eventos do Hyprland.
