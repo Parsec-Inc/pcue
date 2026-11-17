@@ -1,3 +1,9 @@
+## 0.3.0 (2026-11-17)
+
+### Feat
+
+- **update**: pede senha (pkexec/UAC) quando o executável está numa pasta do sistema
+
 ## 0.2.0 (2026-11-17)
 
 ### Feat
