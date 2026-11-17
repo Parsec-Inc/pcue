@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::constants::CLICK_MOVE_SETTLE;
 use crate::hypr::Hypr;
 use crate::input::VirtualInput;
-use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, wait_layer, windows_of};
+use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, wait_layer, wait_monitors, windows_of};
 use crate::progress::{self, Progress};
 use crate::script::{ClickTarget, Guard, Line, MAX_CALL_DEPTH, Step, parse_steps};
 use crate::utils::log;
@@ -123,6 +123,9 @@ impl<'a> Player<'a> {
             },
             Step::WaitLayer { namespace, timeout } => {
                 wait_layer(hypr.context("wait_layer precisa do Hyprland")?, namespace, *timeout)
+            }
+            Step::WaitMonitors(timeout) => {
+                wait_monitors(hypr.context("wait_monitors precisa do Hyprland")?, *timeout)
             }
             Step::Sleep(duration) => {
                 std::thread::sleep(*duration);

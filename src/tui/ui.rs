@@ -458,7 +458,7 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
     let (verb, rest) = trimmed.split_at(trimmed.find(' ').unwrap_or(trimmed.len()));
     let color = match verb {
         "launch" => OK,
-        "wait_window" | "wait_layer" | "sleep" => WARN,
+        "wait_window" | "wait_layer" | "wait_monitors" | "sleep" => WARN,
         "key" | "type" => Color::Magenta,
         "click" | "scroll" => Color::Blue,
         "call" => ACCENT,

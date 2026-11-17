@@ -66,6 +66,39 @@ pub fn wait_layer(hypr: &Hypr, namespace: &str, timeout: Duration) -> Result<()>
     Ok(())
 }
 
+/// Espera os monitores das regras de workspace e devolve cada workspace ao seu.
+pub fn wait_monitors(hypr: &Hypr, timeout: Duration) -> Result<()> {
+    let rules = hypr.workspace_rules()?;
+    let deadline = Instant::now() + timeout;
+    let monitors = loop {
+        let monitors = hypr.monitors()?;
+        let missing: Vec<&str> = rules
+            .iter()
+            .filter_map(|r| r.monitor.as_deref())
+            .filter(|spec| !monitors.iter().any(|m| m.matches(spec)))
+            .collect();
+        if missing.is_empty() {
+            break monitors;
+        }
+        if Instant::now() >= deadline {
+            bail!("monitores não conectaram após {}s: {}", timeout.as_secs(), missing.join(", "));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+    for workspace in hypr.workspaces()? {
+        let target = rules
+            .iter()
+            .find(|r| r.workspace == workspace.name)
+            .and_then(|r| r.monitor.as_deref())
+            .and_then(|spec| monitors.iter().find(|m| m.matches(spec)));
+        if let Some(monitor) = target.filter(|m| m.name != workspace.monitor) {
+            hypr.move_workspace(&workspace.name, &monitor.name)?;
+            log(&format!("workspace {} movido de {} para {}", workspace.name, workspace.monitor, monitor.name));
+        }
+    }
+    Ok(())
+}
+
 /// Janelas da class em ordem de abertura.
 pub fn windows_of(clients: Vec<Client>, re: &Regex) -> Vec<Client> {
     let mut windows: Vec<Client> = clients.into_iter().filter(|c| matches_class(re, c)).collect();

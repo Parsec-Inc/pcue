@@ -73,6 +73,38 @@ impl Client {
     }
 }
 
+/// Monitor conectado.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Monitor {
+    pub name: String,
+    pub description: String,
+}
+
+impl Monitor {
+    /// Aceita o nome (`DP-1`) ou `desc:` como nas regras do Hyprland.
+    pub fn matches(&self, spec: &str) -> bool {
+        match spec.strip_prefix("desc:") {
+            Some(desc) => self.description.starts_with(desc.trim()),
+            None => self.name == spec,
+        }
+    }
+}
+
+/// Workspace existente e o monitor onde está.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Workspace {
+    pub name: String,
+    pub monitor: String,
+}
+
+/// Regra de workspace com monitor fixo.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkspaceRule {
+    #[serde(rename = "workspaceString")]
+    pub workspace: String,
+    pub monitor: Option<String>,
+}
+
 /// Workspace de uma janela.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientWorkspace {
@@ -192,6 +224,36 @@ impl Hypr {
     }
 
     /// Move uma janela para o workspace sem trocar o foco.
+    /// Monitores conectados.
+    pub fn monitors(&self) -> Result<Vec<Monitor>> {
+        serde_json::from_str(&self.request("j/monitors")?).context("resposta inesperada de j/monitors")
+    }
+
+    /// Workspaces existentes.
+    pub fn workspaces(&self) -> Result<Vec<Workspace>> {
+        serde_json::from_str(&self.request("j/workspaces")?).context("resposta inesperada de j/workspaces")
+    }
+
+    /// Regras de workspace que fixam um monitor.
+    pub fn workspace_rules(&self) -> Result<Vec<WorkspaceRule>> {
+        let rules: Vec<WorkspaceRule> = serde_json::from_str(&self.request("j/workspacerules")?)
+            .context("resposta inesperada de j/workspacerules")?;
+        Ok(rules.into_iter().filter(|r| r.monitor.is_some()).collect())
+    }
+
+    /// Leva o workspace para o monitor.
+    pub fn move_workspace(&self, workspace: &str, monitor: &str) -> Result<()> {
+        let dispatch = match self.dialect {
+            Dialect::Lua => format!(
+                "hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})",
+                lua_str(workspace),
+                lua_str(monitor)
+            ),
+            Dialect::Legacy => format!("moveworkspacetomonitor {workspace} {monitor}"),
+        };
+        self.dispatch(&dispatch)
+    }
+
     pub fn move_window(&self, address: &str, workspace: &str) -> Result<()> {
         let dispatch = match self.dialect {
             Dialect::Lua => format!(
@@ -268,4 +330,21 @@ fn request(socket: &Path, message: &str) -> Result<String> {
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
     Ok(reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Monitor;
+
+    #[test]
+    fn monitor_matches_name_or_description() {
+        let monitor = Monitor {
+            name: "DP-7".into(),
+            description: "Dell Inc. DELL P2425H C8T8BJ4 (DP-7)".into(),
+        };
+        assert!(monitor.matches("DP-7"));
+        assert!(monitor.matches("desc:Dell Inc. DELL P2425H C8T8BJ4"));
+        assert!(!monitor.matches("desc:Dell Inc. DELL P2425H 11T8BJ4"));
+        assert!(!monitor.matches("DP-5"));
+    }
 }
