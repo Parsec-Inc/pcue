@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
+use std::path::Path;
 use std::ptr::{null, null_mut};
 
-use anyhow::{Context, Result, bail};
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT, STILL_ACTIVE};
+use anyhow::{Context, Result};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, POINT, RECT, STILL_ACTIVE};
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -124,7 +125,6 @@ pub fn describe(hwnd: HWND, rank: i32, monitors: &[Monitor], cache: &mut HashMap
     }
 }
 
-use std::path::Path;
 
 fn title(hwnd: HWND) -> String {
     let mut buf = [0u16; 512];
@@ -138,64 +138,55 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..len.max(0) as usize])
 }
 
+/// Abre o processo, roda `f` com o handle e fecha; `None` se não abriu.
+fn with_process<T>(access: u32, pid: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
+    let handle = unsafe { OpenProcess(access, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let result = f(handle);
+    unsafe { CloseHandle(handle) };
+    Some(result)
+}
+
 /// Caminho completo do executável do processo.
 pub fn process_path(pid: u32) -> Option<String> {
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
+    with_process(PROCESS_QUERY_LIMITED_INFORMATION, pid, |handle| {
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
-        CloseHandle(handle);
+        let ok = unsafe { QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
         (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
-    }
+    })
+    .flatten()
 }
 
 /// Instante de criação do processo, para ordenar janelas por abertura.
 fn process_created(pid: u32) -> u64 {
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return u64::MAX;
-        }
+    with_process(PROCESS_QUERY_LIMITED_INFORMATION, pid, |handle| {
         let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
-            (zeroed(), zeroed(), zeroed(), zeroed());
-        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
-        CloseHandle(handle);
-        if ok == 0 {
-            return u64::MAX;
-        }
-        (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
-    }
+            unsafe { (zeroed(), zeroed(), zeroed(), zeroed()) };
+        let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    })
+    .flatten()
+    .unwrap_or(u64::MAX)
 }
 
 /// O processo ainda roda?
 pub fn process_alive(pid: u32) -> bool {
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return false;
-        }
+    with_process(PROCESS_QUERY_LIMITED_INFORMATION, pid, |handle| {
         let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code);
-        CloseHandle(handle);
+        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
         ok != 0 && code == STILL_ACTIVE as u32
-    }
+    })
+    .unwrap_or(false)
 }
 
 /// Encerra o processo.
 pub fn terminate(pid: u32) -> Result<()> {
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle.is_null() {
-            bail!("processo {pid} não encontrado");
-        }
-        let ok = TerminateProcess(handle, 1);
-        CloseHandle(handle);
-        anyhow::ensure!(ok != 0, "não foi possível encerrar o processo {pid}");
-    }
+    let ok = with_process(PROCESS_TERMINATE, pid, |handle| unsafe { TerminateProcess(handle, 1) } != 0)
+        .with_context(|| format!("processo {pid} não encontrado"))?;
+    anyhow::ensure!(ok, "não foi possível encerrar o processo {pid}");
     Ok(())
 }
 

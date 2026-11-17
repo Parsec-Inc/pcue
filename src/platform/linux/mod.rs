@@ -231,9 +231,14 @@ fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     }
 }
 
+/// Base XDG de configuração (`~/.config`).
+fn config_base() -> Result<PathBuf> {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
 /// Configuração do pcue.
 pub fn config_dir() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join(APP_NAME))
+    Ok(config_base()?.join(APP_NAME))
 }
 
 /// Log e histórico.
@@ -255,12 +260,12 @@ fn runtime_base() -> Result<PathBuf> {
 
 /// Diretório de configuração do Hyprland.
 fn hypr_config_dir() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("hypr"))
+    Ok(config_base()?.join("hypr"))
 }
 
 /// Entrada de autostart XDG para desktops sem Hyprland.
 fn xdg_autostart_file() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
+    Ok(config_base()?
         .join("autostart")
         .join(format!("{APP_NAME}.desktop")))
 }
@@ -276,6 +281,11 @@ pub fn migrate_legacy() {
             let _ = std::fs::rename(new.join(format!("{LEGACY_NAME}.log")), new.join(LOG_FILE));
         }
     }
+}
+
+/// Nome do gerenciador de janelas da sessão, sem conectar a ele.
+pub fn manager_name() -> Option<&'static str> {
+    hypr::in_session().then_some("Hyprland")
 }
 
 /// Endereço do socket do daemon.
@@ -315,9 +325,6 @@ pub fn restart_self(exe: &std::path::Path, args: &[&str]) -> anyhow::Error {
     let err = Command::new(exe).args(args).exec();
     anyhow!("falha ao reiniciar: {err}")
 }
-
-/// Editor quando `$VISUAL`/`$EDITOR` não estão definidos.
-pub const DEFAULT_EDITOR: &str = "nano";
 
 /// Abre o editor no arquivo, aceitando argumentos em `$EDITOR`.
 pub fn editor_command(editor: &str, file: &std::path::Path) -> Command {

@@ -249,6 +249,11 @@ pub fn is_modifier(key: Key) -> bool {
     MODIFIERS.contains(&key)
 }
 
+/// A tecla é SUPER (Windows)?
+pub fn is_super(key: Key) -> bool {
+    key == Key::LEFTMETA || key == Key::RIGHTMETA
+}
+
 /// A tecla é shift?
 pub fn is_shift(key: Key) -> bool {
     key == Key::LEFTSHIFT || key == Key::RIGHTSHIFT

@@ -93,6 +93,20 @@ fn wait_new_window(
     }
 }
 
+/// Class como regex literal, sem escapar o `-` que não precisa.
+pub fn literal_class(class: &str) -> String {
+    regex::escape(class).replace("\\-", "-")
+}
+
+/// Class literal da janela e sua posição entre as da mesma class (1 = a mais antiga).
+pub fn class_and_nth(window: &Window, all: &[Window]) -> (String, usize) {
+    let class = literal_class(&window.class);
+    let nth = anchored_regex(&class).map_or(1, |re| {
+        1 + all.iter().filter(|w| w.matches(&re) && w.opened < window.opened).count()
+    });
+    (class, nth)
+}
+
 /// Regex da class, case-insensitive e casando a string inteira.
 pub fn anchored_regex(pattern: &str) -> Result<Regex> {
     RegexBuilder::new(&format!("^(?:{pattern})$"))

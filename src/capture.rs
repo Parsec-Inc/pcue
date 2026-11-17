@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 
+use crate::launcher::literal_class;
 use crate::platform::{Desktop, Window};
 use crate::script::Step;
 
@@ -31,7 +32,7 @@ pub fn capture(only: &[String]) -> Result<Vec<String>> {
             let step = Step::Launch {
                 command: command.clone(),
                 workspace: Some(desktop.workspace_for(&workspace)),
-                class: Some(regex::escape(&class)),
+                class: Some(literal_class(&class)),
                 focus: false,
                 always: index > 0,
             };

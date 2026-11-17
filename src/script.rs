@@ -265,7 +265,7 @@ pub fn parse_duration(raw: &str) -> Result<Duration> {
 }
 
 /// Formata uma duração do jeito mais curto e exato.
-fn format_duration(duration: Duration) -> String {
+pub fn format_duration(duration: Duration) -> String {
     let ms = duration.as_millis();
     if ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)

@@ -4,12 +4,13 @@
 
 # pcue
 
-**Rotinas dos parças para o desktop Linux.**
+**Rotinas dos parças para o desktop, no Linux (Hyprland) e no Windows.**
 Abre seus apps nos workspaces certos, grava o que você faz com teclado e mouse
 e repete tudo no login, no desbloqueio, num horário ou quando você mandar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
 ![Hyprland](https://img.shields.io/badge/Hyprland-0.56-58e1ff)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)
 ![TUI](https://img.shields.io/badge/TUI-ratatui-cyan)
 ![Pixel art](https://img.shields.io/badge/pixel%20art-Aseprite-7d929e)
 
@@ -51,9 +52,11 @@ acompanhamento ao vivo das execuções.
 | | |
 |---|---|
 | 🚀 **Abrir apps no workspace certo** | `launch` abre (ou reaproveita) o app, espera a janela e move para o workspace se precisar |
-| ⏺️ **Gravação de ações** | teclado e mouse viram passos editáveis; cliques ficam relativos à janela, mesmo com várias janelas da mesma class |
+| ⏺️ **Gravação inteligente** | percebe app abrindo, foco e troca de workspace: grava `launch`, `focus` e `workspace` em vez das teclas, e você revisa cada trecho antes de salvar |
+| 🖱️ **Cliques relativos** | cliques ficam relativos à janela, mesmo com várias janelas da mesma class |
 | 🔒 **Senhas fora da gravação** | `SUPER+F9` pausa e retoma, `SUPER+F10` encerra |
 | ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, horário diário e intervalo |
+| 🪟 **Linux e Windows** | mesma config e mesma TUI; no Windows `workspace=N` é o monitor N |
 | 🧠 **Passos espertos** | `optional`, `repeat=N`, `if_window=`, `unless_window=` e `call outra_rotina` |
 | 🐞 **Depuração** | rodar só um passo, rodar a partir de um passo, acompanhar e interromper execuções |
 | 📜 **Histórico detalhado** | todas as execuções, com a linha que falhou e o erro; `Enter` leva direto ao passo |
@@ -63,9 +66,11 @@ acompanhamento ao vivo das execuções.
 
 ## Instalação
 
+### Linux
+
 Requisitos:
 
-- Linux com Rust estável (edition 2024)
+- Rust estável (edition 2024)
 - Hyprland 0.56+ para workspaces, janelas e cliques (sem Hyprland os apps abrem, mas sem posicionamento)
 - Seu usuário no grupo `input` para gravar (`/dev/input`) e reproduzir (`/dev/uinput`)
 
@@ -86,6 +91,31 @@ pcue install
 
 O daemon se reinicia sozinho quando o binário muda, então depois de um
 `cargo install --path .` não precisa fazer nada.
+
+### Windows
+
+Requisitos: Windows 10 ou 11 e Rust estável. Não precisa de permissão de
+administrador.
+
+```powershell
+git clone https://github.com/Parsec-Inc/pcue.git
+cd pcue
+cargo install --path .
+pcue install   # registra o daemon na inicialização do usuário (HKCU\...\Run)
+```
+
+Diferenças no Windows:
+
+- `workspace=N` é o **monitor N**, contado da esquerda para a direita;
+  `workspace N` foca a janela mais recente desse monitor.
+- `class` é o nome do executável sem `.exe` (ex.: `Code`, `firefox`); a class
+  Win32 da janela também é aceita.
+- `wait_layer` não existe; `wait_monitors` espera a barra de tarefas e a
+  quantidade de monitores parar de mudar.
+- `type` digita em Unicode, então funciona com qualquer layout de teclado.
+- O Windows não deixa sobrescrever um `.exe` em uso: rode `pcue uninstall` e
+  encerre o daemon antes de atualizar, ou instale e reinicie a sessão.
+- Config em `%APPDATA%\pcue`, log e histórico em `%LOCALAPPDATA%\pcue`.
 
 ## Uso
 
@@ -121,6 +151,7 @@ Cada rotina é uma lista de passos, um por linha:
 ```text
 launch "firefox --new-window" workspace=2 class=firefox [focus] [always]
 wait_window class=REGEX [nth=N] [timeout=30s]
+focus class=REGEX [nth=N] [timeout=30s]
 wait_layer namespace=REGEX [timeout=30s]
 wait_monitors [timeout=30s]
 workspace N
@@ -143,6 +174,26 @@ Qualquer passo aceita modificadores:
 | `if_window=REGEX` | só executa se existir janela com essa class |
 | `unless_window=REGEX` | só executa se **não** existir janela com essa class |
 
+`focus` espera a janela existir e foca nela, trocando de workspace se
+precisar. É mais robusto que `key SUPER+N`, que depende de onde o foco está.
+
+### Gravação
+
+`R` na TUI (ou `pcue record rotina`) grava teclado e mouse. Enquanto grava, o
+pcue também observa o desktop e junta as ações com o que elas causaram:
+
+| Você fez | O pcue sugere | Alternativas |
+|---|---|---|
+| abriu um app (launcher, atalho, clique) | `launch "cmd" workspace=N class=X focus` | teclas originais + `wait_window` |
+| trocou de janela por atalho (`SUPER+N`, `Alt+Tab`) | `focus class=X` | `workspace N`, teclas originais |
+| foi para um workspace vazio | `workspace N` | teclas originais |
+| uma janela nova de um app já aberto apareceu | teclas originais + `wait_window class=X nth=N` | |
+
+Ao encerrar, a tela de revisão mostra cada trecho com a forma escolhida:
+`Tab`/`←`/`→` troca a forma, `p` liga ou desliga a pausa antes do trecho, `d`
+apaga e `⏎` salva. Pausas longas (de quando você pensou) ficam visíveis para
+desligar. `SUPER+F9` pausa a gravação (para senhas) e `SUPER+F10` encerra.
+
 ### Rotinas de boot
 
 Ao adicionar o gatilho `login`, o pcue põe no início da rotina os passos que
@@ -156,14 +207,15 @@ sleep 1500ms
 ```
 
 O comentário marca o prefixo, então ele não é repetido. Pode editar ou apagar
-os passos à vontade.
+os passos à vontade. No Windows o prefixo é só `wait_monitors` e o `sleep`.
 
 `click window=... nth=2` mira a segunda janela da class na ordem em que foram
 abertas, então dá para gravar cliques em duas instâncias do mesmo app.
 
 ## Configuração
 
-Tudo fica em `~/.config/pcue/config.toml` (modo `0600`). A TUI edita esse
+Tudo fica em `~/.config/pcue/config.toml` (modo `0600`; no Windows em
+`%APPDATA%\pcue\config.toml`). A TUI edita esse
 arquivo e o daemon recarrega sozinho quando ele muda.
 
 ```toml
@@ -207,7 +259,7 @@ Arquivos:
 ## Como funciona
 
 ```text
-            ┌──────────────┐  eventos (logind, Hyprland, j/locked, emit)
+            ┌──────────────┐  eventos (logind/Hyprland ou sessão do Windows, emit)
  login ───► │ pcue daemon  │◄────────────────────────────────────────────
             │  agenda e    │  horários e intervalos
             │  dispara     │──► pcue run <rotina>  ──► player
@@ -219,9 +271,12 @@ Arquivos:
             └──────────────┘
 ```
 
+- **Plataforma**: `src/platform/` tem uma implementação para Linux (Hyprland,
+  uinput, evdev, logind) e outra para Windows (Win32, SendInput, hooks de
+  teclado e mouse, eventos de sessão); o resto do código é igual nos dois.
 - **Hyprland**: o pcue fala direto com o socket IPC e detecta se o Hyprland usa a configuração em Lua (0.56+) ou a sintaxe antiga.
-- **Gravação**: lê `/dev/input` com evdev, agrupa texto, rolagens e atalhos e anota pausas como `sleep`.
-- **Reprodução**: cria um teclado/mouse virtual com uinput.
+- **Gravação**: lê `/dev/input` com evdev (no Windows, hooks globais), agrupa texto, rolagens e atalhos, observa janelas e foco e propõe `launch`/`focus`/`workspace`.
+- **Reprodução**: teclado/mouse virtual com uinput (no Windows, `SendInput`).
 - **Execuções**: cada rotina roda num processo próprio, com trava por rotina, histórico e notificação em caso de falha.
 
 ## Pixel art
@@ -255,4 +310,8 @@ cargo test
 cargo clippy
 cargo run            # TUI
 cargo run -- run nome --only 3
+
+# Windows a partir do Linux (precisa do mingw-w64; testes rodam no wine)
+cargo check --target x86_64-pc-windows-gnu
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu
 ```

@@ -3,6 +3,7 @@ mod capture;
 mod config;
 mod constants;
 mod daemon;
+mod draft;
 mod history;
 mod keys;
 mod launcher;
@@ -182,8 +183,13 @@ fn record_in_terminal() -> Result<Vec<String>> {
             RecordEvent::Paused(true) => println!("‖ pausado"),
             RecordEvent::Paused(false) => println!("● gravando"),
             RecordEvent::Step(step) => println!("  {step}"),
-            RecordEvent::Done(steps) => {
+            RecordEvent::Desktop(change) => println!("  ◆ {change}"),
+            RecordEvent::Done(draft) => {
+                let steps = draft.render();
                 println!("■ gravação encerrada: {} passo(s)", steps.len());
+                if draft.choices() > 0 {
+                    println!("  (na TUI dá para escolher outras formas de cada trecho antes de salvar)");
+                }
                 return Ok(steps);
             }
             RecordEvent::Failed(err) => anyhow::bail!(err),

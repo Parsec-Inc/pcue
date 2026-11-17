@@ -80,3 +80,19 @@ pub const KNOWN_BARS: &[&str] = &["quickshell:bar", "waybar"];
 /// No Windows, quanto a quantidade de monitores precisa ficar parada no boot.
 #[cfg(windows)]
 pub const MONITOR_SETTLE: Duration = Duration::from_secs(2);
+
+/// Gravação: ações com no máximo este intervalo formam uma mesma sequência.
+pub const CAUSE_GAP: Duration = Duration::from_millis(1500);
+/// Gravação: o foco precisa mudar até este tempo depois do atalho para ser dele.
+pub const FOCUS_ATTRIBUTION: Duration = Duration::from_millis(1500);
+/// Gravação: foco na janela recém-aberta até este tempo vira `launch ... focus`.
+pub const FOCUS_FOLLOW: Duration = Duration::from_millis(1500);
+/// Prefixo das mudanças do desktop na lista da gravação.
+pub const DESKTOP_MARK: &str = "◆";
+/// Editor quando `$VISUAL`/`$EDITOR` não estão definidos.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_EDITOR: &str = "nano";
+#[cfg(windows)]
+pub const DEFAULT_EDITOR: &str = "notepad";
+/// Gravação: intervalo entre consultas ao desktop.
+pub const DESKTOP_POLL: Duration = Duration::from_millis(150);

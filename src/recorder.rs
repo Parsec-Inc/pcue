@@ -1,13 +1,15 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crate::constants::{DEFAULT_WAIT_TIMEOUT, RECORD_COUNTDOWN_SECS, RECORD_MIN_SLEEP, RECORD_SLEEP_ROUNDING_MS};
-use crate::keys::{Key, MODIFIERS, combo_name, is_modifier, is_shift, key_to_char};
-use crate::launcher::{anchored_regex, windows_of};
-use crate::platform::{Desktop, RawInput, listen_input};
+
+use crate::constants::{DESKTOP_POLL, RECORD_COUNTDOWN_SECS};
+use crate::draft::{self, Action, ActionKind, Change, DesktopEvent, Draft, Seen};
+use crate::keys::{Key, MODIFIERS, is_modifier, is_shift, is_super, key_to_char};
+use crate::launcher::class_and_nth;
+use crate::platform::{Desktop, RawInput, Window, listen_input};
 use crate::script::{Button, ClickTarget, Step};
 
 /// Atalhos da gravação (sempre com SUPER).
@@ -22,8 +24,11 @@ pub enum RecordEvent {
     Countdown(u64),
     Started,
     Paused(bool),
+    /// Ação crua gravada.
     Step(String),
-    Done(Vec<String>),
+    /// Mudança percebida no desktop (janela aberta, foco, workspace).
+    Desktop(String),
+    Done(Draft),
     Failed(String),
 }
 
@@ -48,39 +53,136 @@ pub fn start() -> Session {
     std::thread::spawn(move || {
         let result = record(&sender, &flag);
         let _ = sender.send(match result {
-            Ok(steps) => RecordEvent::Done(steps),
+            Ok(draft) => RecordEvent::Done(draft),
             Err(err) => RecordEvent::Failed(format!("{err:#}")),
         });
     });
     Session { events, stop }
 }
 
-fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Vec<String>> {
+fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft> {
     let receiver = listen_input()?;
     let desktop = Desktop::connect();
     for remaining in (1..=RECORD_COUNTDOWN_SECS).rev() {
         let _ = sender.send(RecordEvent::Countdown(remaining));
         std::thread::sleep(Duration::from_secs(1));
         if stop.load(Ordering::Relaxed) {
-            return Ok(Vec::new());
+            return Ok(Draft::default());
         }
     }
     let start = Instant::now();
     let _ = sender.send(RecordEvent::Started);
 
-    let mut recorder = Recorder::new(&desktop, start, sender);
+    let mut recorder = Recorder::new(&desktop, sender);
+    let mut watcher = desktop.manager().map(|_| Watcher::new(&desktop));
     while !stop.load(Ordering::Relaxed) {
-        let (time, event) = match receiver.recv_timeout(STOP_POLL) {
+        if let Some(watcher) = watcher.as_mut()
+            && watcher.last_poll.elapsed() >= DESKTOP_POLL
+        {
+            for event in watcher.poll() {
+                if !recorder.paused {
+                    let _ = sender.send(RecordEvent::Desktop(describe_change(&event.change)));
+                    recorder.changes.push(event);
+                }
+            }
+        }
+        let wait = watcher
+            .as_ref()
+            .map_or(STOP_POLL, |w| DESKTOP_POLL.saturating_sub(w.last_poll.elapsed()).min(STOP_POLL));
+        let (time, input) = match receiver.recv_timeout(wait) {
             Ok(received) => received,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        if time >= start && recorder.handle(time, &event) == Flow::Stop {
+        if time >= start && recorder.handle(time, input) == Flow::Stop {
             break;
         }
     }
     recorder.flush();
-    Ok(recorder.steps)
+    Ok(draft::build(&recorder.actions, &recorder.changes))
+}
+
+/// Texto curto da mudança para a tela de gravação.
+fn describe_change(change: &Change) -> String {
+    match change {
+        Change::Opened { window, .. } => format!("abriu {} no workspace {}", window.class, window.workspace),
+        Change::Focused { window: Some(window), .. } => format!("foco em {}", window.class),
+        Change::Focused { workspace, .. } => format!("workspace {workspace}"),
+    }
+}
+
+/// Acompanha janelas, foco e workspace consultando o desktop.
+struct Watcher<'a> {
+    desktop: &'a Desktop,
+    known: HashMap<String, Window>,
+    active: Option<String>,
+    workspace: String,
+    last_poll: Instant,
+}
+
+impl<'a> Watcher<'a> {
+    fn new(desktop: &'a Desktop) -> Self {
+        let mut watcher = Self {
+            desktop,
+            known: HashMap::new(),
+            active: None,
+            workspace: String::new(),
+            last_poll: Instant::now(),
+        };
+        watcher.poll();
+        watcher
+    }
+
+    /// Mudanças desde a última consulta (na primeira, só tira a foto).
+    fn poll(&mut self) -> Vec<DesktopEvent> {
+        let first = self.workspace.is_empty();
+        self.last_poll = Instant::now();
+        let at = self.last_poll;
+        let Ok(windows) = self.desktop.windows() else { return Vec::new() };
+        let mut events = Vec::new();
+        let opened = windows.iter().filter(|w| !first && !self.known.contains_key(&w.id));
+        for window in opened {
+            let others = self.known.values().any(|w| w.class == window.class);
+            let new_process = !self.known.values().any(|w| w.pid == window.pid);
+            events.push(DesktopEvent {
+                at,
+                change: Change::Opened {
+                    window: self.seen(window, &windows),
+                    command: new_process.then(|| self.desktop.launch_command(window)).flatten(),
+                    others,
+                    new_process,
+                },
+            });
+        }
+        let active = self.desktop.active_window().ok().flatten();
+        let workspace = self.desktop.active_workspace().unwrap_or_default();
+        let active_id = active.as_ref().map(|w| w.id.clone());
+        if !first && (active_id != self.active || workspace != self.workspace) {
+            events.push(DesktopEvent {
+                at,
+                change: Change::Focused {
+                    window: active.as_ref().map(|w| self.seen(w, &windows)),
+                    workspace: self.desktop.workspace_for(&workspace).0,
+                    workspace_changed: workspace != self.workspace,
+                },
+            });
+        }
+        self.known = windows.into_iter().map(|w| (w.id.clone(), w)).collect();
+        self.active = active_id;
+        self.workspace = workspace;
+        events
+    }
+
+    /// Janela no formato dos passos: class literal e posição entre as da class.
+    fn seen(&self, window: &Window, all: &[Window]) -> Seen {
+        let (class, nth) = class_and_nth(window, all);
+        Seen {
+            id: window.id.clone(),
+            class,
+            nth,
+            workspace: self.desktop.workspace_for(&window.workspace).0,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -89,55 +191,49 @@ enum Flow {
     Stop,
 }
 
-/// Acumula eventos crus em passos legíveis.
+/// Acumula eventos crus em ações legíveis.
 struct Recorder<'a> {
     desktop: &'a Desktop,
     sender: &'a mpsc::Sender<RecordEvent>,
-    steps: Vec<String>,
+    actions: Vec<Action>,
+    changes: Vec<DesktopEvent>,
     held: Vec<Key>,
     lone_modifier: Option<Key>,
     text: String,
     text_span: Option<(Instant, Instant)>,
     scroll: Option<(Instant, Instant, i32)>,
-    last: Instant,
     paused: bool,
-    waited: HashSet<String>,
 }
 
 impl<'a> Recorder<'a> {
-    fn new(desktop: &'a Desktop, start: Instant, sender: &'a mpsc::Sender<RecordEvent>) -> Self {
+    fn new(desktop: &'a Desktop, sender: &'a mpsc::Sender<RecordEvent>) -> Self {
         Self {
             desktop,
             sender,
-            steps: Vec::new(),
+            actions: Vec::new(),
+            changes: Vec::new(),
             held: Vec::new(),
             lone_modifier: None,
             text: String::new(),
             text_span: None,
             scroll: None,
-            last: start,
             paused: false,
-            waited: HashSet::new(),
         }
     }
 
-    fn handle(&mut self, time: Instant, event: &RawInput) -> Flow {
-        match *event {
-            RawInput::Key { key, down } => self.on_key(time, key, down),
+    fn handle(&mut self, time: Instant, input: RawInput) -> Flow {
+        match input {
+            RawInput::Key { key, down } => return self.on_key(time, key, down),
             RawInput::Button(button) => {
                 self.lone_modifier = None;
                 if !self.paused {
                     self.on_click(time, button);
                 }
-                Flow::Continue
             }
-            RawInput::Wheel(amount) => {
-                if !self.paused {
-                    self.on_scroll(time, amount);
-                }
-                Flow::Continue
-            }
+            RawInput::Wheel(amount) if !self.paused => self.on_scroll(time, amount),
+            RawInput::Wheel(_) => {}
         }
+        Flow::Continue
     }
 
     fn on_key(&mut self, time: Instant, key: Key, down: bool) -> Flow {
@@ -158,10 +254,9 @@ impl<'a> Recorder<'a> {
             let _ = self.sender.send(RecordEvent::Paused(self.paused));
             return Flow::Continue;
         }
-        if self.paused {
-            return Flow::Continue;
+        if !self.paused {
+            self.on_press(time, key);
         }
-        self.on_press(time, key);
         Flow::Continue
     }
 
@@ -176,7 +271,8 @@ impl<'a> Recorder<'a> {
         }
         self.held.retain(|k| *k != key);
         if self.lone_modifier.take() == Some(key) && !self.paused {
-            self.push(time, Step::Key(vec![key]).to_string());
+            self.flush();
+            self.push(time, time, ActionKind::Combo, Step::Key(vec![key]));
         }
     }
 
@@ -197,43 +293,30 @@ impl<'a> Recorder<'a> {
             }
         }
         self.flush();
-        let mut combo: Vec<Key> = MODIFIERS
-            .iter()
-            .copied()
-            .filter(|m| self.held.contains(m))
-            .collect();
+        let mut combo: Vec<Key> = MODIFIERS.iter().copied().filter(|m| self.held.contains(m)).collect();
         combo.push(key);
-        self.push(time, format!("key {}", combo_name(&combo)));
+        self.push(time, time, ActionKind::Combo, Step::Key(combo));
     }
 
-    /// Clique relativo à janela sob o cursor, com espera pela janela antes.
+    /// Clique relativo à janela sob o cursor.
     fn on_click(&mut self, time: Instant, button: Button) {
         self.flush();
         let desktop = self.desktop;
         if desktop.manager().is_none() {
-            self.push(time, format!("# clique {button:?} não gravado (sem gerenciador de janelas)"));
+            let _ = self.sender.send(RecordEvent::Desktop(format!(
+                "clique {button:?} não gravado (sem gerenciador de janelas)"
+            )));
             return;
         }
-        let Ok((x, y)) = desktop.cursor_pos() else {
-            self.push(time, "# clique não gravado (cursor indisponível)".into());
-            return;
-        };
-        let target = match window_at(desktop, x, y) {
+        let Ok((x, y)) = desktop.cursor_pos() else { return };
+        let windows = desktop.windows().unwrap_or_default();
+        let under = windows
+            .iter()
+            .filter(|w| w.on_screen && w.contains(x, y))
+            .min_by_key(|w| w.focus_rank);
+        let target = match under {
             Some(window) => {
-                let class = literal_class(&window.class);
-                let nth = anchored_regex(&class)
-                    .ok()
-                    .zip(desktop.windows().ok())
-                    .and_then(|(re, windows)| windows_of(windows, &re).iter().position(|w| w.id == window.id))
-                    .map_or(1, |index| index + 1);
-                if self.waited.insert(class.clone()) {
-                    let wait = Step::WaitWindow {
-                        class: class.clone(),
-                        nth: 1,
-                        timeout: DEFAULT_WAIT_TIMEOUT,
-                    };
-                    self.push(time, wait.to_string());
-                }
+                let (class, nth) = class_and_nth(window, &windows);
                 ClickTarget::Window {
                     class,
                     nth,
@@ -243,7 +326,7 @@ impl<'a> Recorder<'a> {
             }
             None => ClickTarget::Absolute { x, y },
         };
-        self.push(time, Step::Click { button, target }.to_string());
+        self.push(time, time, ActionKind::Click, Step::Click { button, target });
     }
 
     fn on_scroll(&mut self, time: Instant, value: i32) {
@@ -255,9 +338,7 @@ impl<'a> Recorder<'a> {
     }
 
     fn super_held(&self) -> bool {
-        self.held
-            .iter()
-            .any(|k| *k == Key::LEFTMETA || *k == Key::RIGHTMETA)
+        self.held.iter().any(|k| is_super(*k))
     }
 
     fn flush(&mut self) {
@@ -269,49 +350,21 @@ impl<'a> Recorder<'a> {
         if let Some((first, last)) = self.text_span.take() {
             let text = std::mem::take(&mut self.text);
             if !text.is_empty() {
-                self.push(first, Step::Type(text).to_string());
+                self.push(first, last, ActionKind::Text, Step::Type(text));
             }
-            self.last = last;
         }
     }
 
     fn flush_scroll(&mut self) {
-        if let Some((first, last, total)) = self.scroll.take() {
-            if total != 0 {
-                self.push(first, Step::Scroll(total).to_string());
-            }
-            self.last = last;
+        if let Some((first, last, total)) = self.scroll.take()
+            && total != 0
+        {
+            self.push(first, last, ActionKind::Scroll, Step::Scroll(total));
         }
     }
 
-    /// Acrescenta o passo, com `sleep` se houve pausa perceptível antes.
-    fn push(&mut self, time: Instant, line: String) {
-        let gap = time.saturating_duration_since(self.last);
-        if !self.steps.is_empty() && gap >= RECORD_MIN_SLEEP {
-            let rounded = gap.as_millis().div_ceil(RECORD_SLEEP_ROUNDING_MS) * RECORD_SLEEP_ROUNDING_MS;
-            self.emit(Step::Sleep(Duration::from_millis(rounded as u64)).to_string());
-        }
-        self.emit(line);
-        self.last = time;
+    fn push(&mut self, start: Instant, end: Instant, kind: ActionKind, step: Step) {
+        let _ = self.sender.send(RecordEvent::Step(step.to_string()));
+        self.actions.push(Action { start, end, kind, step });
     }
-
-    fn emit(&mut self, line: String) {
-        let _ = self.sender.send(RecordEvent::Step(line.clone()));
-        self.steps.push(line);
-    }
-}
-
-/// Class como regex literal, sem escapar o `-` que não precisa.
-fn literal_class(class: &str) -> String {
-    regex::escape(class).replace("\\-", "-")
-}
-
-/// Janela visível sob o ponto, a mais recente em foco primeiro.
-fn window_at(desktop: &Desktop, x: i32, y: i32) -> Option<crate::platform::Window> {
-    desktop
-        .windows()
-        .ok()?
-        .into_iter()
-        .filter(|w| w.on_screen && w.contains(x, y))
-        .min_by_key(|w| w.focus_rank)
 }

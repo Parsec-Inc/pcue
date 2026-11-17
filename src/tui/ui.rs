@@ -10,10 +10,12 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use super::anim::{self, FLASH, POP, Slide, countdown, mix, spinner, wave};
 use super::app::{App, CELEBRATE_FOR, Hit, Modal, Pane, RecPhase, Recording};
+use crate::constants::DESKTOP_MARK;
+use crate::draft::Draft;
 use super::sprites::{self, Sprite};
 use crate::config::{Routine, Trigger};
 use crate::schedule::describe_next;
-use crate::script::{SYNTAX, is_comment};
+use crate::script::{SYNTAX, format_duration, is_comment};
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::DarkGray;
@@ -454,10 +456,13 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
     if is_comment(step) {
         return vec![Span::styled(step, Style::new().fg(MUTED).italic())];
     }
+    if step.starts_with(DESKTOP_MARK) {
+        return vec![Span::styled(step, Style::new().fg(ACCENT).italic())];
+    }
     let trimmed = step.trim_start();
     let (verb, rest) = trimmed.split_at(trimmed.find(' ').unwrap_or(trimmed.len()));
     let color = match verb {
-        "launch" => OK,
+        "launch" | "focus" => OK,
         "wait_window" | "wait_layer" | "wait_monitors" | "sleep" => WARN,
         "workspace" => OK,
         "key" | "type" => Color::Magenta,
@@ -480,6 +485,14 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
         });
     }
     spans
+}
+
+/// Passo colorido com spans que não emprestam o texto.
+fn owned_spans(step: &str) -> Vec<Span<'static>> {
+    highlight_step(step)
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect()
 }
 
 /// Botões da barra inferior para o painel atual.
@@ -657,6 +670,10 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
             let area = popup(app, full, full.width.saturating_sub(4), full.height.saturating_sub(2));
             draw_history(frame, app, area, runs, *selected, only.as_deref());
         }
+        Modal::Review { routine, draft, selected } => {
+            let area = popup(app, full, full.width.saturating_sub(4), full.height.saturating_sub(2));
+            draw_review(frame, app, area, routine, draft, *selected);
+        }
     }
     app.modal = Some(modal);
 }
@@ -759,7 +776,7 @@ fn draw_history(
         lines.push(Line::raw(""));
         lines.push(Line::styled(format!("passo {line}"), Style::new().fg(MUTED)));
         let mut spans = vec![Span::raw("  ")];
-        spans.extend(highlight_step(&step).into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)));
+        spans.extend(owned_spans(&step));
         lines.push(Line::from(spans));
     }
     if let Some(err) = &run.error {
@@ -769,6 +786,81 @@ fn draw_history(
     }
     let detail = Rect { x: detail.x + 2, width: detail.width.saturating_sub(2), ..detail };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), detail);
+}
+
+/// Revisão da gravação: cada trecho com a forma escolhida e as alternativas.
+fn draw_review(frame: &mut Frame, app: &mut App, area: Rect, routine: &str, draft: &Draft, selected: usize) {
+    frame.render_widget(Clear, area);
+    let title = format!("Revisar gravação · {routine}");
+    let block = pane_block(&title, true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [intro, body, preview_area, buttons] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(4),
+        Constraint::Length(7),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} trecho(s) com alternativas. Tab/←→ troca a forma · p liga/desliga a pausa antes · d apaga · ⏎ salva · Esc descarta",
+            draft.choices()
+        ))
+        .fg(MUTED)
+        .wrap(Wrap { trim: true }),
+        intro,
+    );
+    let rows: Vec<Line> = draft
+        .items
+        .iter()
+        .map(|item| {
+            let variant = item.current();
+            let mut spans = Vec::new();
+            match item.pause {
+                Some(pause) if item.keep_pause => {
+                    spans.push(Span::styled(format!("{:>6} ", format_duration(pause)), Style::new().fg(WARN)))
+                }
+                Some(_) => spans.push(Span::styled("  ---- ", Style::new().fg(MUTED).crossed_out())),
+                None => spans.push(Span::raw("       ")),
+            }
+            if item.variants.len() > 1 {
+                spans.push(Span::styled(
+                    format!("{DESKTOP_MARK} {} {}/{} ", variant.label, item.chosen + 1, item.variants.len()),
+                    Style::new().fg(ACCENT).bold(),
+                ));
+            }
+            let first = variant.steps.first().map(String::as_str).unwrap_or_default();
+            spans.extend(owned_spans(first));
+            if variant.steps.len() > 1 {
+                spans.push(Span::styled(format!("  +{}", variant.steps.len() - 1), Style::new().fg(MUTED)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    app.slides.modal.follow(selected);
+    let first = draw_list(frame.buffer_mut(), body, rows, selected, true, app.slides.modal, app.scroll.entry("review").or_default());
+    push_row_hits(app, body, first, draft.items.len(), Hit::ReviewRow);
+
+    let mut lines = Vec::new();
+    if let Some(item) = draft.items.get(selected) {
+        for (index, variant) in item.variants.iter().enumerate() {
+            let chosen = index == item.chosen;
+            let marker = if chosen { "●" } else { "○" };
+            let style = if chosen { Style::new().fg(ACCENT).bold() } else { Style::new().fg(MUTED) };
+            let mut spans = vec![Span::styled(format!("{marker} {:<36} ", variant.label), style)];
+            let joined = variant.steps.join(" · ");
+            if chosen {
+                spans.extend(owned_spans(&joined));
+            } else {
+                spans.push(Span::styled(joined, Style::new().fg(MUTED)));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    let preview = pane_block("Formas deste trecho", false);
+    frame.render_widget(Paragraph::new(lines).block(preview).wrap(Wrap { trim: false }), preview_area);
+    draw_buttons(frame, app, buttons, &[("salvar ⏎", KeyCode::Enter, true), ("descartar", KeyCode::Esc, false)]);
 }
 
 fn draw_recording(frame: &mut Frame, app: &mut App) {
@@ -813,14 +905,17 @@ fn draw_recording(frame: &mut Frame, app: &mut App) {
         Line::raw(""),
         Line::from(match recording.phase {
             RecPhase::Countdown(_) => "Troque para a janela onde vai agir.",
-            RecPhase::Recording => "Teclado e mouse viram passos.",
+            RecPhase::Recording => "Teclado, mouse e janelas viram passos.",
             RecPhase::Paused => "Nada é gravado agora (bom para senhas).",
         }),
         Line::raw(""),
         Line::from(vec![Span::styled(" SUPER+F9 ", Style::new().fg(Color::Black).bg(WARN)), Span::raw(" pausa/retoma")]),
         Line::from(vec![Span::styled(" SUPER+F10 ", Style::new().fg(Color::Black).bg(BAD)), Span::raw(" encerra e salva")]),
         Line::raw(""),
-        Line::styled(format!("{} passo(s)", recording.steps.len()), Style::new().fg(MUTED)),
+        Line::styled(
+            format!("{} ação(ões)", recording.actions),
+            Style::new().fg(MUTED),
+        ),
     ];
     frame.render_widget(Paragraph::new(info_lines), info);
 
@@ -934,7 +1029,8 @@ const HELP_GENERAL: &[&str] = &[
     "",
     "Gravação (R no painel de passos)",
     "  SUPER+F9 pausa/retoma (use em senhas) · SUPER+F10 encerra",
-    "  cliques viram posição relativa à janela, com wait_window antes",
+    "  apps abertos viram launch, troca de janela vira focus/workspace; cliques ficam relativos à janela",
+    "  ao encerrar, revise: Tab troca a forma do trecho · p liga/desliga a pausa · d apaga · ⏎ salva",
     "",
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",

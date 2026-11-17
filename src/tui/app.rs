@@ -11,9 +11,10 @@ use ratatui::layout::{Position, Rect};
 use super::anim::Slide;
 use super::text_input::TextInput;
 use crate::config::{Config, Routine, Trigger, validate_name};
-use crate::constants::{BOOT_EVENT, BUILTIN_EVENTS, TUI_RUN_DELAY_MS};
+use crate::constants::{BOOT_EVENT, BUILTIN_EVENTS, DEFAULT_EDITOR, DESKTOP_MARK, TUI_RUN_DELAY_MS};
 use crate::history::{self, Run};
 use crate::progress::{self, Progress};
+use crate::draft::Draft;
 use crate::recorder::{self, RecordEvent};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
@@ -55,6 +56,7 @@ pub enum Hit {
     Key(KeyCode),
     Option(usize),
     HistoryRow(usize),
+    ReviewRow(usize),
     Backdrop,
     StopRecording,
 }
@@ -87,6 +89,12 @@ pub enum Modal {
         runs: Vec<Run>,
         selected: usize,
         only: Option<String>,
+    },
+    /// Revisão da gravação: escolher a forma de cada trecho antes de salvar.
+    Review {
+        routine: String,
+        draft: Draft,
+        selected: usize,
     },
 }
 
@@ -147,6 +155,8 @@ pub struct Recording {
     pub routine: String,
     pub phase: RecPhase,
     pub steps: Vec<String>,
+    /// Ações gravadas (sem contar as mudanças do desktop).
+    pub actions: usize,
     pub started: Option<Instant>,
     pub last_step: Instant,
 }
@@ -225,7 +235,7 @@ impl App {
             finished: None,
             daemon_up: daemon::is_running(),
             installed: install::is_installed(),
-            manager: Desktop::connect().manager(),
+            manager: install::manager_name(),
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -640,7 +650,7 @@ impl App {
             _ if self.recording.is_some() => {}
             Hit::Key(code) => self.on_key(KeyEvent::from(code)),
             Hit::Backdrop => {
-                if !matches!(self.modal, Some(Modal::Input { .. })) {
+                if !matches!(self.modal, Some(Modal::Input { .. } | Modal::Review { .. })) {
                     self.modal = None;
                 }
             }
@@ -648,6 +658,14 @@ impl App {
                 if let Some(Modal::Pick { selected, .. }) = &mut self.modal {
                     *selected = index;
                     self.on_modal_key(KeyEvent::from(KeyCode::Enter));
+                }
+            }
+            Hit::ReviewRow(index) => {
+                if let Some(Modal::Review { draft, selected, .. }) = &mut self.modal {
+                    *selected = index;
+                    if double && let Some(item) = draft.items.get_mut(index) {
+                        item.cycle(true);
+                    }
                 }
             }
             Hit::HistoryRow(index) => {
@@ -794,6 +812,51 @@ impl App {
                         let Some(run) = runs.get(*selected).cloned() else { return };
                         self.modal = None;
                         self.jump_to(&run);
+                    }
+                    _ => {}
+                }
+            }
+            Modal::Review {
+                routine,
+                draft,
+                selected,
+            } => {
+                if let Some(index) = moved(*selected, draft.items.len(), key.code) {
+                    *selected = index;
+                    return;
+                }
+                let item = draft.items.get_mut(*selected);
+                match key.code {
+                    KeyCode::Tab
+                    | KeyCode::Right
+                    | KeyCode::Char('l')
+                    | KeyCode::BackTab
+                    | KeyCode::Left
+                    | KeyCode::Char('h') => {
+                        let forward = matches!(key.code, KeyCode::Tab | KeyCode::Right | KeyCode::Char('l'));
+                        if let Some(item) = item {
+                            item.cycle(forward);
+                        }
+                    }
+                    KeyCode::Char('p') => {
+                        if let Some(item) = item.filter(|i| i.pause.is_some()) {
+                            item.keep_pause = !item.keep_pause;
+                        }
+                    }
+                    KeyCode::Char('d') | KeyCode::Delete => {
+                        if item.is_some() {
+                            draft.items.remove(*selected);
+                            *selected = (*selected).min(draft.items.len().saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let (routine, steps) = (routine.clone(), draft.render());
+                        self.modal = None;
+                        self.save_recording(&routine, steps);
+                    }
+                    KeyCode::Esc => {
+                        self.modal = None;
+                        self.info("gravação descartada");
                     }
                     _ => {}
                 }
@@ -1154,6 +1217,7 @@ impl App {
             routine,
             phase: RecPhase::Countdown(crate::constants::RECORD_COUNTDOWN_SECS),
             steps: Vec::new(),
+            actions: 0,
             started: None,
             last_step: Instant::now(),
         });
@@ -1174,9 +1238,14 @@ impl App {
                 }
                 Ok(RecordEvent::Step(step)) => {
                     recording.steps.push(step);
+                    recording.actions += 1;
                     recording.last_step = Instant::now();
                 }
-                Ok(RecordEvent::Done(steps)) => break Some(Ok(steps)),
+                Ok(RecordEvent::Desktop(change)) => {
+                    recording.steps.push(format!("{DESKTOP_MARK} {change}"));
+                    recording.last_step = Instant::now();
+                }
+                Ok(RecordEvent::Done(draft)) => break Some(Ok(draft)),
                 Ok(RecordEvent::Failed(err)) => break Some(Err(err)),
                 Err(TryRecvError::Empty) => break None,
                 Err(TryRecvError::Disconnected) => break Some(Err("gravação interrompida".into())),
@@ -1185,17 +1254,29 @@ impl App {
         let Some(outcome) = outcome else { return };
         let routine = recording.routine.clone();
         self.recording = None;
-        let result = outcome.map_err(anyhow::Error::msg).and_then(|steps| {
-            let total = steps.len();
-            self.mutate(|c| {
-                c.routine_or_create(&routine)?.steps.extend(steps);
-                Ok(())
-            })?;
-            Ok(total)
+        match outcome {
+            Ok(draft) if draft.choices() > 0 => {
+                self.open_modal(Modal::Review {
+                    routine,
+                    draft,
+                    selected: 0,
+                });
+            }
+            Ok(draft) => self.save_recording(&routine, draft.render()),
+            Err(err) => self.error(format!("gravação: {err}")),
+        }
+    }
+
+    /// Acrescenta os passos gravados à rotina e mostra onde ficaram.
+    fn save_recording(&mut self, routine: &str, steps: Vec<String>) {
+        let total = steps.len();
+        let result = self.mutate(|c| {
+            c.routine_or_create(routine)?.steps.extend(steps);
+            Ok(())
         });
-        match result {
+        match result.map(|()| total) {
             Ok(total) => {
-                if let Some(index) = self.index_of(&routine) {
+                if let Some(index) = self.index_of(routine) {
                     self.select_routine(index);
                 }
                 self.focus = Pane::Steps;
@@ -1227,7 +1308,7 @@ impl App {
 
         let editor = std::env::var("VISUAL")
             .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| install::DEFAULT_EDITOR.into());
+            .unwrap_or_else(|_| DEFAULT_EDITOR.into());
         let status = install::editor_command(&editor, &file)
             .status()
             .with_context(|| format!("falha ao abrir {editor}"))?;

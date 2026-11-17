@@ -56,7 +56,9 @@ impl Desktop {
     /// Janela em foco.
     pub fn active_window(&self) -> Result<Option<Window>> {
         let active = win::foreground();
-        Ok(self.windows()?.into_iter().find(|w| w.id == win::window_id(active)))
+        let window = win::is_app_window(active)
+            .then(|| win::describe(active, 0, &win::monitors(), &mut HashMap::new()));
+        Ok(window)
     }
 
     /// Monitor da janela em foco.
@@ -98,10 +100,7 @@ impl Desktop {
             .into_iter()
             .filter(|w| w.workspace == workspace.0 && w.on_screen)
             .min_by_key(|w| w.focus_rank);
-        match top {
-            Some(window) => self.focus_window(&window),
-            None => Ok(()),
-        }
+        top.map_or(Ok(()), |window| self.focus_window(&window))
     }
 
     /// Posição global do cursor.
@@ -203,6 +202,11 @@ pub fn runtime_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("run"))
 }
 
+/// Nome do gerenciador de janelas da sessão.
+pub fn manager_name() -> Option<&'static str> {
+    Some("Windows")
+}
+
 /// Named pipe do daemon, um por usuário.
 pub fn daemon_endpoint() -> Result<Name<'static>> {
     let user = std::env::var("USERNAME").unwrap_or_default();
@@ -251,9 +255,6 @@ pub fn detach_daemon(args: &[&str]) -> Result<bool> {
         .context("falha ao iniciar o daemon em segundo plano")?;
     Ok(true)
 }
-
-/// Editor quando `%VISUAL%`/`%EDITOR%` não estão definidos.
-pub const DEFAULT_EDITOR: &str = "notepad";
 
 /// Abre o editor no arquivo, aceitando argumentos em `%EDITOR%`.
 pub fn editor_command(editor: &str, file: &Path) -> Command {
