@@ -10,6 +10,7 @@ mod install;
 mod keys;
 mod launcher;
 mod player;
+mod progress;
 mod recorder;
 mod runner;
 mod schedule;
@@ -23,7 +24,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::hypr::Hypr;
+use crate::runner::Selection;
 use crate::utils::{config_path, history_path, log_path};
 
 /// Rotinas pós-login: abre apps nos workspaces, grava e reproduz ações.
@@ -53,6 +54,12 @@ enum Command {
         /// Espera antes de começar, em ms
         #[arg(long, default_value_t = 0)]
         delay_ms: u64,
+        /// Começa na linha N do script
+        #[arg(long, conflicts_with = "only")]
+        from: Option<usize>,
+        /// Executa só a linha N do script
+        #[arg(long)]
+        only: Option<usize>,
     },
     /// Envia um evento personalizado ao daemon
     Emit { event: String },
@@ -89,9 +96,12 @@ fn main() -> Result<()> {
             routine,
             trigger,
             delay_ms,
+            from,
+            only,
         } => {
+            let selection = Selection::from_flags(from, only);
             std::thread::sleep(Duration::from_millis(delay_ms));
-            runner::run_routine(&Config::load(&path)?, &routine, &trigger)
+            runner::run_routine(&Config::load(&path)?, &routine, &trigger, selection)
         }
         Command::Emit { event } => daemon::emit(&event),
         Command::List => {
@@ -111,7 +121,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Record { routine } => {
-            let steps = recorder::record(Hypr::detect().as_ref())?;
+            let steps = record_in_terminal()?;
             append_steps(&path, &routine, steps)
         }
         Command::Capture {
@@ -160,4 +170,25 @@ fn append_steps(path: &std::path::Path, name: &str, steps: Vec<String>) -> Resul
     config.save(path)?;
     println!("{total} passo(s) acrescentados a '{name}'");
     Ok(())
+}
+
+/// Gravação pela linha de comando, com o progresso impresso.
+fn record_in_terminal() -> Result<Vec<String>> {
+    use recorder::RecordEvent;
+    println!("Troque para onde vai agir. SUPER+F9 pausa/retoma (senhas), SUPER+F10 encerra.");
+    for event in recorder::start().events {
+        match event {
+            RecordEvent::Countdown(n) => println!("  {n}..."),
+            RecordEvent::Started => println!("● gravando"),
+            RecordEvent::Paused(true) => println!("‖ pausado"),
+            RecordEvent::Paused(false) => println!("● gravando"),
+            RecordEvent::Step(step) => println!("  {step}"),
+            RecordEvent::Done(steps) => {
+                println!("■ gravação encerrada: {} passo(s)", steps.len());
+                return Ok(steps);
+            }
+            RecordEvent::Failed(err) => anyhow::bail!(err),
+        }
+    }
+    anyhow::bail!("gravação interrompida")
 }

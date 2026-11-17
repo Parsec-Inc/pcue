@@ -14,8 +14,12 @@ pub const SYNTAX: &[&str] = &[
     "wait_window class=REGEX [timeout=30s]      sleep 500ms | 2s | 1m | 1h",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
     "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
-    "# comentário",
+    "call outra_rotina      # comentário",
+    "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
 ];
+
+/// Profundidade máxima de `call` aninhado.
+pub const MAX_CALL_DEPTH: usize = 8;
 
 /// Um passo do script pós-boot.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +43,27 @@ pub enum Step {
         target: ClickTarget,
     },
     Scroll(i32),
+    Call(String),
+}
+
+/// Condições e repetição aplicáveis a qualquer passo.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Guard {
+    /// Falha vira aviso e a rotina segue.
+    pub optional: bool,
+    /// Só executa se existir janela com essa class.
+    pub if_window: Option<String>,
+    /// Só executa se não existir janela com essa class.
+    pub unless_window: Option<String>,
+    /// Quantas vezes executar (1 = normal).
+    pub repeat: u32,
+}
+
+/// Passo com suas condições.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instruction {
+    pub step: Step,
+    pub guard: Guard,
 }
 
 /// Botão do mouse.
@@ -67,6 +92,7 @@ pub enum ClickTarget {
 pub struct Line {
     pub number: usize,
     pub step: Step,
+    pub guard: Guard,
 }
 
 /// Interpreta os passos de uma rotina, ignorando vazios e comentários.
@@ -79,7 +105,7 @@ pub fn parse_steps<S: AsRef<str>>(lines: &[S]) -> Result<Vec<Line>> {
         .map(|(index, line)| {
             let number = index + 1;
             parse_line(line)
-                .map(|step| Line { number, step })
+                .map(|Instruction { step, guard }| Line { number, step, guard })
                 .with_context(|| format!("linha {number}: {}", line.trim()))
         })
         .collect()
@@ -97,11 +123,20 @@ pub fn is_comment(line: &str) -> bool {
     trimmed.is_empty() || trimmed.starts_with('#')
 }
 
-/// Interpreta um passo.
-pub fn parse_line(line: &str) -> Result<Step> {
+/// Interpreta um passo e suas condições.
+pub fn parse_line(line: &str) -> Result<Instruction> {
     let tokens = tokenize(line)?;
     let (verb, args) = tokens.split_first().ok_or_else(|| anyhow!("linha vazia"))?;
     let mut options = Options::new(args);
+    let guard = Guard {
+        optional: options.flag("optional"),
+        if_window: options.take("if_window"),
+        unless_window: options.take("unless_window"),
+        repeat: match options.take("repeat") {
+            Some(raw) => raw.parse().ok().filter(|n| *n >= 1).context("repeat deve ser 1 ou mais")?,
+            None => 1,
+        },
+    };
     let step = match verb.text.as_str() {
         "launch" => Step::Launch {
             command: options.positional("comando")?,
@@ -122,6 +157,11 @@ pub fn parse_line(line: &str) -> Result<Step> {
         "key" => Step::Key(parse_combo(&options.positional("atalho")?)?),
         "type" => Step::Type(options.positional("texto")?),
         "click" => parse_click(&mut options)?,
+        "call" => {
+            let name = options.positional("rotina")?;
+            crate::config::validate_name(&name)?;
+            Step::Call(name)
+        }
         "scroll" => Step::Scroll(
             options
                 .positional("quantidade")?
@@ -131,7 +171,7 @@ pub fn parse_line(line: &str) -> Result<Step> {
         other => bail!("comando desconhecido: {other}"),
     };
     options.finish()?;
-    Ok(step)
+    Ok(Instruction { step, guard })
 }
 
 /// `click [left|right|middle] X,Y` ou `click [botão] window=CLASS [nth=N] at=X,Y`.
@@ -344,7 +384,7 @@ impl Options {
 }
 
 /// Flags sem valor aceitas pelos comandos.
-const KNOWN_FLAGS: &[&str] = &["focus", "always"];
+const KNOWN_FLAGS: &[&str] = &["focus", "always", "optional"];
 
 /// Chave de opção é um identificador simples.
 fn is_option_name(key: &str) -> bool {
@@ -438,7 +478,32 @@ impl fmt::Display for Step {
                 }
             }
             Step::Scroll(amount) => write!(f, "scroll {amount}"),
+            Step::Call(name) => write!(f, "call {name}"),
         }
+    }
+}
+
+impl fmt::Display for Guard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(class) = &self.if_window {
+            write!(f, " if_window={}", quote(class))?;
+        }
+        if let Some(class) = &self.unless_window {
+            write!(f, " unless_window={}", quote(class))?;
+        }
+        if self.repeat > 1 {
+            write!(f, " repeat={}", self.repeat)?;
+        }
+        if self.optional {
+            f.write_str(" optional")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Line {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.step, self.guard)
     }
 }
 
@@ -498,5 +563,22 @@ mod tests {
         assert!(parse("wait_window").is_err());
         assert!(parse("sleep 10").is_err());
         assert!(parse("dance").is_err());
+    }
+
+    #[test]
+    fn parses_guards_and_call() {
+        let lines = parse("call setup if_window=kitty repeat=3 optional\nkey SUPER+1 unless_window=\"fire.*\"").unwrap();
+        assert_eq!(lines[0].step, Step::Call("setup".into()));
+        assert_eq!(lines[0].guard.repeat, 3);
+        assert!(lines[0].guard.optional);
+        assert_eq!(lines[0].guard.if_window.as_deref(), Some("kitty"));
+        assert_eq!(lines[1].guard.unless_window.as_deref(), Some("fire.*"));
+        for line in &lines {
+            let again = parse(&line.to_string()).unwrap();
+            assert_eq!(again[0].guard, line.guard);
+            assert_eq!(again[0].step, line.step);
+        }
+        assert!(parse("sleep 1s repeat=0").is_err());
+        assert!(parse("call Nome").is_err());
     }
 }

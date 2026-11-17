@@ -3,26 +3,36 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 
+use super::anim::Slide;
 use super::text_input::TextInput;
 use crate::config::{Config, Routine, Trigger, validate_name};
 use crate::constants::{BUILTIN_EVENTS, TUI_RUN_DELAY_MS};
 use crate::history::{self, Run};
-use crate::hypr::Hypr;
+use crate::progress::{self, Progress};
+use crate::recorder::{self, RecordEvent};
+use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
-use crate::runner::spawn_run;
 use crate::script::{SYNTAX, is_comment, parse_line, parse_steps};
-use crate::utils::{log_path, runtime_dir};
-use crate::{capture, daemon, install, recorder};
+use crate::utils::{expand_home, log_path, runtime_dir};
+use crate::{capture, daemon, install};
 
-/// Intervalo entre atualizações de status do daemon e histórico.
+/// Intervalo entre leituras de daemon, histórico e agenda.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
+/// Intervalo entre leituras do progresso das execuções.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// Quanto tempo uma mensagem fica na barra.
 const STATUS_TTL: Duration = Duration::from_secs(6);
+/// Quanto tempo o resultado de uma execução fica em destaque.
+pub const CELEBRATE_FOR: Duration = Duration::from_millis(2500);
+/// Dois cliques dentro deste intervalo contam como duplo.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Linhas do log mostradas no visualizador.
 const LOG_TAIL: usize = 400;
 /// Prefixo das linhas de ajuda no arquivo aberto no editor.
@@ -34,6 +44,20 @@ pub enum Pane {
     Routines,
     Triggers,
     Steps,
+}
+
+/// Região clicável registrada no último desenho.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hit {
+    Routine(usize),
+    Trigger(usize),
+    Step(usize),
+    Pane(Pane),
+    Key(KeyCode),
+    Option(usize),
+    HistoryRow(usize),
+    Backdrop,
+    StopRecording,
 }
 
 /// Janela sobreposta ativa.
@@ -60,6 +84,11 @@ pub enum Modal {
         lines: Vec<String>,
         scroll: usize,
     },
+    History {
+        runs: Vec<Run>,
+        selected: usize,
+        only: Option<String>,
+    },
 }
 
 /// O que fazer com o texto digitado.
@@ -72,6 +101,8 @@ pub enum InputPurpose {
     Daily(Option<usize>),
     Interval(Option<usize>),
     CustomEvent(Option<usize>),
+    Export,
+    Import,
 }
 
 /// O que fazer com a opção escolhida.
@@ -90,17 +121,51 @@ pub enum ConfirmAction {
     MakeFree,
 }
 
-/// Ações que precisam do terminal fora da TUI.
-pub enum External {
-    Record,
-    Editor,
-}
-
 /// Mensagem na barra de status.
 pub struct Status {
     pub text: String,
     pub error: bool,
-    at: Instant,
+    pub at: Instant,
+}
+
+/// Filtro da lista de rotinas.
+pub struct Filter {
+    pub input: TextInput,
+    pub editing: bool,
+}
+
+/// Fase da gravação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecPhase {
+    Countdown(u64),
+    Recording,
+    Paused,
+}
+
+/// Gravação acontecendo dentro da TUI.
+pub struct Recording {
+    session: recorder::Session,
+    pub routine: String,
+    pub phase: RecPhase,
+    pub steps: Vec<String>,
+    pub started: Option<Instant>,
+    pub last_step: Instant,
+}
+
+/// Resultado recente de uma execução, para destacar.
+pub struct Finished {
+    pub routine: String,
+    pub ok: bool,
+    pub at: Instant,
+}
+
+/// Seleções animadas de cada lista.
+#[derive(Default)]
+pub struct Slides {
+    pub routines: Slide,
+    pub triggers: Slide,
+    pub steps: Slide,
+    pub modal: Slide,
 }
 
 /// Estado completo da interface.
@@ -112,22 +177,37 @@ pub struct App {
     pub step_selected: usize,
     pub trigger_selected: usize,
     pub modal: Option<Modal>,
+    pub modal_at: Instant,
     pub status: Option<Status>,
-    pub history: HashMap<String, Run>,
+    pub runs: Vec<Run>,
     history_modified: Option<SystemTime>,
+    pub running: HashMap<String, Progress>,
+    pub next_runs: HashMap<String, i64>,
+    pub finished: Option<Finished>,
     pub daemon_up: bool,
     pub installed: bool,
     pub hyprland: bool,
+    pub filter: Option<Filter>,
+    pub recording: Option<Recording>,
+    pub slides: Slides,
+    pub flash: Option<Instant>,
+    pub hits: Vec<(Rect, Hit)>,
+    /// Primeira linha visível de cada lista, mantida entre quadros.
+    pub scroll: HashMap<&'static str, usize>,
+    pub clock: Instant,
+    last_click: Option<(Instant, Hit)>,
     editor_draft: Option<String>,
     children: Vec<std::process::Child>,
-    external: Option<External>,
+    open_editor: bool,
     last_refresh: Instant,
+    last_progress: Instant,
     quit: bool,
 }
 
 impl App {
     pub fn new(path: PathBuf) -> Result<Self> {
         let config = Config::load(&path)?;
+        let runs = history::all();
         Ok(Self {
             path,
             config,
@@ -136,16 +216,29 @@ impl App {
             step_selected: 0,
             trigger_selected: 0,
             modal: None,
+            modal_at: Instant::now(),
             status: None,
-            history: history::latest(),
+            runs,
             history_modified: history::modified(),
+            running: progress::running(),
+            next_runs: daemon::next_runs(),
+            finished: None,
             daemon_up: daemon::is_running(),
             installed: install::is_installed(),
             hyprland: crate::hypr::in_session(),
+            filter: None,
+            recording: None,
+            slides: Slides::default(),
+            flash: None,
+            hits: Vec::new(),
+            scroll: HashMap::new(),
+            clock: Instant::now(),
+            last_click: None,
             editor_draft: None,
             children: Vec::new(),
-            external: None,
+            open_editor: false,
             last_refresh: Instant::now(),
+            last_progress: Instant::now(),
             quit: false,
         })
     }
@@ -154,8 +247,9 @@ impl App {
         self.quit
     }
 
-    pub fn take_external(&mut self) -> Option<External> {
-        self.external.take()
+    /// Pedido de abrir o $EDITOR, que precisa do terminal fora da TUI.
+    pub fn take_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.open_editor)
     }
 
     /// Rotina selecionada.
@@ -163,40 +257,96 @@ impl App {
         self.config.routines.get(self.selected)
     }
 
+    /// Última execução da rotina.
+    pub fn last_run(&self, name: &str) -> Option<&Run> {
+        self.runs.iter().rfind(|run| run.routine == name)
+    }
+
     /// Mensagem atual, se ainda válida.
     pub fn status(&self) -> Option<&Status> {
         self.status.as_ref().filter(|s| s.at.elapsed() < STATUS_TTL)
     }
 
-    /// Atualiza daemon e histórico periodicamente.
+    /// Índices das rotinas que passam no filtro.
+    pub fn visible(&self) -> Vec<usize> {
+        let needle = self
+            .filter
+            .as_ref()
+            .map(|f| f.input.value().to_lowercase())
+            .unwrap_or_default();
+        self.config
+            .routines
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                needle.is_empty() || r.name.contains(&needle) || r.kind_label().contains(&needle)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Algo se mexendo na tela pede quadros mais frequentes.
+    pub fn animating(&self) -> bool {
+        let recent = |at: Option<Instant>, d: Duration| at.is_some_and(|t| t.elapsed() < d);
+        self.recording.is_some()
+            || !self.running.is_empty()
+            || recent(self.flash, super::anim::FLASH)
+            || recent(self.finished.as_ref().map(|f| f.at), CELEBRATE_FOR)
+            || self.modal_at.elapsed() < super::anim::POP
+            || [&self.slides.routines, &self.slides.triggers, &self.slides.steps, &self.slides.modal]
+                .iter()
+                .any(|s| s.moving())
+    }
+
+    /// Atualiza gravação, progresso, daemon e histórico.
     pub fn refresh(&mut self) {
+        self.poll_recording();
+        if self.last_progress.elapsed() >= PROGRESS_EVERY {
+            self.last_progress = Instant::now();
+            self.running = progress::running();
+        }
         if self.last_refresh.elapsed() < REFRESH_EVERY {
             return;
         }
         self.last_refresh = Instant::now();
         self.children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
         self.daemon_up = daemon::is_running();
+        self.next_runs = daemon::next_runs();
         let modified = history::modified();
         if modified != self.history_modified {
             self.history_modified = modified;
-            self.history = history::latest();
+            let before = self.runs.len();
+            self.runs = history::all();
+            if let Some(run) = self.runs.last().filter(|_| self.runs.len() > before) {
+                self.finished = Some(Finished {
+                    routine: run.routine.clone(),
+                    ok: run.ok,
+                    at: Instant::now(),
+                });
+            }
         }
     }
 
     fn info(&mut self, text: impl Into<String>) {
+        self.set_status(text.into(), false);
+    }
+
+    fn error(&mut self, text: impl Into<String>) {
+        self.set_status(text.into(), true);
+    }
+
+    fn set_status(&mut self, text: String, error: bool) {
         self.status = Some(Status {
-            text: text.into(),
-            error: false,
+            text,
+            error,
             at: Instant::now(),
         });
     }
 
-    fn error(&mut self, text: impl Into<String>) {
-        self.status = Some(Status {
-            text: text.into(),
-            error: true,
-            at: Instant::now(),
-        });
+    fn open_modal(&mut self, modal: Modal) {
+        self.modal = Some(modal);
+        self.modal_at = Instant::now();
+        self.slides.modal = Slide::default();
     }
 
     /// Aplica a mudança numa cópia; só grava se continuar válida.
@@ -205,6 +355,7 @@ impl App {
         change(&mut draft)?;
         draft.save(&self.path)?;
         self.config = draft;
+        self.flash = Some(Instant::now());
         self.clamp();
         Ok(())
     }
@@ -227,6 +378,10 @@ impl App {
 
     fn clamp(&mut self) {
         let last = |len: usize| len.saturating_sub(1);
+        let visible = self.visible();
+        if !visible.contains(&self.selected) {
+            self.selected = visible.first().copied().unwrap_or(0);
+        }
         self.selected = self.selected.min(last(self.config.routines.len()));
         let (steps, triggers) = self
             .routine()
@@ -235,22 +390,46 @@ impl App {
         self.trigger_selected = self.trigger_selected.min(last(triggers));
     }
 
+    fn select_routine(&mut self, index: usize) {
+        if index != self.selected {
+            self.step_selected = 0;
+            self.trigger_selected = 0;
+        }
+        self.selected = index;
+        self.clamp();
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.quit = true;
+            if let Some(recording) = &self.recording {
+                recording.session.stop();
+            } else {
+                self.quit = true;
+            }
+            return;
+        }
+        if self.recording.is_some() {
             return;
         }
         if self.modal.is_some() {
             self.on_modal_key(key);
             return;
         }
+        if self.filter.as_ref().is_some_and(|f| f.editing) && self.on_filter_key(key) {
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Char('?') => self.open_modal(Modal::Help),
             KeyCode::Char('L') => self.open_log(),
+            KeyCode::Char('H') => self.open_history(None),
             KeyCode::Char('I') => self.toggle_install(),
             KeyCode::Tab | KeyCode::Right => self.cycle_focus(true),
             KeyCode::BackTab | KeyCode::Left => self.cycle_focus(false),
+            KeyCode::Esc if self.focus == Pane::Routines && self.filter.is_some() => {
+                self.filter = None;
+                self.clamp();
+            }
             KeyCode::Esc => self.focus = Pane::Routines,
             _ => match self.focus {
                 Pane::Routines => self.on_routines_key(key),
@@ -258,6 +437,29 @@ impl App {
                 Pane::Steps => self.on_steps_key(key),
             },
         }
+    }
+
+    /// Teclas do campo de busca; `false` deixa a tecla seguir adiante.
+    fn on_filter_key(&mut self, key: KeyEvent) -> bool {
+        let Some(filter) = self.filter.as_mut() else { return false };
+        match key.code {
+            KeyCode::Esc => self.filter = None,
+            KeyCode::Enter => {
+                filter.editing = false;
+                if filter.input.value().is_empty() {
+                    self.filter = None;
+                }
+            }
+            KeyCode::Up | KeyCode::Down => return false,
+            _ => {
+                if !filter.input.handle(key) {
+                    return false;
+                }
+            }
+        }
+        self.focus = Pane::Routines;
+        self.clamp();
+        true
     }
 
     fn cycle_focus(&mut self, forward: bool) {
@@ -271,9 +473,12 @@ impl App {
     }
 
     fn on_routines_key(&mut self, key: KeyEvent) {
-        if let Some(index) = moved(self.selected, self.config.routines.len(), key.code) {
-            self.selected = index;
-            self.clamp();
+        let visible = self.visible();
+        let position = visible.iter().position(|i| *i == self.selected).unwrap_or(0);
+        if let Some(moved) = moved(position, visible.len(), key.code) {
+            if let Some(index) = visible.get(moved) {
+                self.select_routine(*index);
+            }
             return;
         }
         match key.code {
@@ -283,11 +488,32 @@ impl App {
                 "",
                 InputPurpose::NewRoutine,
             ),
+            KeyCode::Char('/') => {
+                let input = self.filter.take().map(|f| f.input).unwrap_or_default();
+                self.filter = Some(Filter { input, editing: true });
+            }
+            KeyCode::Char('i') => self.open_input(
+                "Importar rotinas",
+                "caminho de um .toml exportado pelo pcue",
+                "~/",
+                InputPurpose::Import,
+            ),
             _ if self.routine().is_none() => {}
-            KeyCode::Enter | KeyCode::Char('x') => self.run_selected(),
+            KeyCode::Enter | KeyCode::Char('x') => self.run_selected(Selection::All),
+            KeyCode::Char('s') => self.stop_selected(),
             KeyCode::Char('r') => {
                 let name = self.routine().map(|r| r.name.clone()).unwrap_or_default();
                 self.open_input("Renomear rotina", "novo nome", &name, InputPurpose::RenameRoutine);
+            }
+            KeyCode::Char('D') => self.duplicate_selected(),
+            KeyCode::Char('X') => {
+                let name = self.routine().map(|r| r.name.clone()).unwrap_or_default();
+                self.open_input(
+                    "Exportar rotina",
+                    "arquivo .toml de destino",
+                    &format!("~/pcue-{name}.toml"),
+                    InputPurpose::Export,
+                );
             }
             KeyCode::Char('d') => {
                 let name = self.routine().map(|r| r.name.clone()).unwrap_or_default();
@@ -331,19 +557,26 @@ impl App {
         }
         match key.code {
             KeyCode::Char('a') => self.open_input("Novo passo", &step_hint(), "", InputPurpose::AddStep),
-            KeyCode::Char('R') => self.external = Some(External::Record),
+            KeyCode::Char('R') => self.start_recording(),
             KeyCode::Char('c') => self.capture_windows(),
-            KeyCode::Char('E') => self.external = Some(External::Editor),
+            KeyCode::Char('E') => self.open_editor = true,
             _ if count == 0 => {}
-            KeyCode::Enter | KeyCode::Char('e') => {
-                let current = self.routine().map(|r| r.steps[index].clone()).unwrap_or_default();
-                self.open_input("Editar passo", &step_hint(), &current, InputPurpose::EditStep(index));
-            }
+            KeyCode::Enter | KeyCode::Char('e') => self.edit_step(index),
+            KeyCode::Char('x') => self.run_step(index, Selection::Only(index + 1)),
+            KeyCode::Char('f') => self.run_step(index, Selection::From(index + 1)),
             KeyCode::Char('d') => self.confirm("Apagar este passo?".into(), ConfirmAction::DeleteStep(index)),
             KeyCode::Char('K') if index > 0 => self.move_step(index, index - 1),
             KeyCode::Char('J') if index + 1 < count => self.move_step(index, index + 1),
             _ => {}
         }
+    }
+
+    fn edit_step(&mut self, index: usize) {
+        let current = self
+            .routine()
+            .and_then(|r| r.steps.get(index).cloned())
+            .unwrap_or_default();
+        self.open_input("Editar passo", &step_hint(), &current, InputPurpose::EditStep(index));
     }
 
     fn move_step(&mut self, from: usize, to: usize) {
@@ -354,8 +587,108 @@ impl App {
         self.report(result);
     }
 
+    /// Clique, duplo clique e rolagem.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        let at = Position::new(mouse.column, mouse.row);
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(at))
+            .map(|(_, hit)| hit.clone());
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(hit) = hit else { return };
+                let double = self
+                    .last_click
+                    .as_ref()
+                    .is_some_and(|(t, h)| *h == hit && t.elapsed() < DOUBLE_CLICK);
+                self.last_click = (!double).then(|| (Instant::now(), hit.clone()));
+                self.on_hit(hit, double);
+            }
+            MouseEventKind::ScrollUp => self.on_wheel(hit, KeyCode::Up),
+            MouseEventKind::ScrollDown => self.on_wheel(hit, KeyCode::Down),
+            _ => {}
+        }
+    }
+
+    fn on_wheel(&mut self, hit: Option<Hit>, code: KeyCode) {
+        if self.recording.is_some() {
+            return;
+        }
+        if self.modal.is_some() {
+            self.on_modal_key(KeyEvent::from(code));
+            return;
+        }
+        let pane = match hit {
+            Some(Hit::Routine(_) | Hit::Pane(Pane::Routines)) => Pane::Routines,
+            Some(Hit::Trigger(_) | Hit::Pane(Pane::Triggers)) => Pane::Triggers,
+            Some(Hit::Step(_) | Hit::Pane(Pane::Steps)) => Pane::Steps,
+            _ => return,
+        };
+        self.focus = pane;
+        self.on_key(KeyEvent::from(code));
+    }
+
+    fn on_hit(&mut self, hit: Hit, double: bool) {
+        match hit {
+            Hit::StopRecording => {
+                if let Some(recording) = &self.recording {
+                    recording.session.stop();
+                }
+            }
+            _ if self.recording.is_some() => {}
+            Hit::Key(code) => self.on_key(KeyEvent::from(code)),
+            Hit::Backdrop => {
+                if !matches!(self.modal, Some(Modal::Input { .. })) {
+                    self.modal = None;
+                }
+            }
+            Hit::Option(index) => {
+                if let Some(Modal::Pick { selected, .. }) = &mut self.modal {
+                    *selected = index;
+                    self.on_modal_key(KeyEvent::from(KeyCode::Enter));
+                }
+            }
+            Hit::HistoryRow(index) => {
+                if let Some(Modal::History { selected, .. }) = &mut self.modal {
+                    *selected = index;
+                    if double {
+                        self.on_modal_key(KeyEvent::from(KeyCode::Enter));
+                    }
+                }
+            }
+            Hit::Routine(index) => {
+                self.focus = Pane::Routines;
+                self.select_routine(index);
+                if double {
+                    self.run_selected(Selection::All);
+                }
+            }
+            Hit::Trigger(index) => {
+                self.focus = Pane::Triggers;
+                self.trigger_selected = index;
+                if double {
+                    self.edit_trigger(index);
+                }
+            }
+            Hit::Step(index) => {
+                self.focus = Pane::Steps;
+                self.step_selected = index;
+                if double {
+                    self.edit_step(index);
+                }
+            }
+            Hit::Pane(pane) => {
+                if self.routine().is_some() {
+                    self.focus = pane;
+                }
+            }
+        }
+    }
+
     fn open_input(&mut self, title: &str, hint: &str, value: &str, purpose: InputPurpose) {
-        self.modal = Some(Modal::Input {
+        self.open_modal(Modal::Input {
             title: title.to_string(),
             hint: hint.to_string(),
             input: TextInput::with_value(value),
@@ -365,11 +698,11 @@ impl App {
     }
 
     fn confirm(&mut self, prompt: String, action: ConfirmAction) {
-        self.modal = Some(Modal::Confirm { prompt, action });
+        self.open_modal(Modal::Confirm { prompt, action });
     }
 
     fn pick_trigger_kind(&mut self, editing: Option<usize>) {
-        self.modal = Some(Modal::Pick {
+        self.open_modal(Modal::Pick {
             title: "Tipo de gatilho".into(),
             options: vec![
                 ("evento".into(), "login, bloqueio, desbloqueio, suspensão, monitor...".into()),
@@ -387,7 +720,7 @@ impl App {
             .map(|(name, desc)| ((*name).to_string(), (*desc).to_string()))
             .collect();
         options.push(("personalizado…".into(), "disparado por `pcue emit <nome>`".into()));
-        self.modal = Some(Modal::Pick {
+        self.open_modal(Modal::Pick {
             title: "Evento".into(),
             options,
             selected: 0,
@@ -424,11 +757,12 @@ impl App {
     }
 
     fn on_modal_key(&mut self, key: KeyEvent) {
+        let current = self.routine().map(|r| r.name.clone());
         let Some(modal) = self.modal.as_mut() else { return };
         let esc = key.code == KeyCode::Esc;
         match modal {
             Modal::Help => {
-                if esc || matches!(key.code, KeyCode::Char('q' | '?')) {
+                if esc || matches!(key.code, KeyCode::Char('q' | '?') | KeyCode::Enter) {
                     self.modal = None;
                 }
             }
@@ -442,6 +776,25 @@ impl App {
                     KeyCode::PageDown => *scroll = (*scroll + 20).min(max),
                     KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
                     KeyCode::End | KeyCode::Char('G') => *scroll = max,
+                    _ => {}
+                }
+            }
+            Modal::History { runs, selected, only } => {
+                if let Some(index) = moved(*selected, runs.len(), key.code) {
+                    *selected = index;
+                    return;
+                }
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q' | 'H') => self.modal = None,
+                    KeyCode::Char('f') => {
+                        let next = if only.is_some() { None } else { current };
+                        self.open_history(next);
+                    }
+                    KeyCode::Enter => {
+                        let Some(run) = runs.get(*selected).cloned() else { return };
+                        self.modal = None;
+                        self.jump_to(&run);
+                    }
                     _ => {}
                 }
             }
@@ -481,7 +834,11 @@ impl App {
                 KeyCode::Enter => {
                     let (purpose, value) = (*purpose, input.value().trim().to_string());
                     match self.apply_input(purpose, &value) {
-                        Ok(()) => self.modal = None,
+                        Ok(()) => {
+                            if matches!(self.modal, Some(Modal::Input { .. })) {
+                                self.modal = None;
+                            }
+                        }
                         Err(err) => {
                             if let Some(Modal::Input { error, .. }) = &mut self.modal {
                                 *error = Some(format!("{err:#}"));
@@ -506,8 +863,9 @@ impl App {
                 if self.config.find(value).is_some() {
                     bail!("já existe uma rotina '{value}'");
                 }
+                self.filter = None;
                 self.mutate(|c| c.routine_or_create(value).map(|_| ()))?;
-                self.selected = self.config.routines.len() - 1;
+                self.select_routine(self.config.routines.len() - 1);
                 self.focus = Pane::Steps;
                 self.info(format!("rotina '{value}' criada (livre); `a` adiciona passos, `R` grava"));
             }
@@ -548,8 +906,31 @@ impl App {
                     },
                 )?;
             }
+            InputPurpose::Export => {
+                let name = self.routine().map(|r| r.name.clone()).context("nenhuma rotina")?;
+                let path = expand_home(value)?;
+                self.config.export(&name, &path)?;
+                self.info(format!("'{name}' exportada para {}", path.display()));
+            }
+            InputPurpose::Import => {
+                let path = expand_home(value)?;
+                let mut names = Vec::new();
+                self.mutate(|c| {
+                    names = c.import(&path)?;
+                    Ok(())
+                })?;
+                self.filter = None;
+                if let Some(index) = names.first().and_then(|n| self.index_of(n)) {
+                    self.select_routine(index);
+                }
+                self.info(format!("importada(s): {}", names.join(", ")));
+            }
         }
         Ok(())
+    }
+
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.config.routines.iter().position(|r| r.name == name)
     }
 
     fn apply_pick(&mut self, purpose: PickPurpose, index: usize, choice: &str) {
@@ -578,11 +959,9 @@ impl App {
     /// Adiciona ou troca um gatilho; com gatilho a rotina é agendada.
     fn save_trigger(&mut self, editing: Option<usize>, trigger: Trigger) -> Result<()> {
         trigger.validate()?;
-        self.mutate_routine(|r| {
-            match editing {
-                Some(index) => r.triggers[index] = trigger,
-                None => r.triggers.push(trigger),
-            }
+        self.mutate_routine(|r| match editing {
+            Some(index) => r.triggers[index] = trigger,
+            None => r.triggers.push(trigger),
         })?;
         self.focus = Pane::Triggers;
         if editing.is_none() {
@@ -622,6 +1001,22 @@ impl App {
         self.report(result);
     }
 
+    fn duplicate_selected(&mut self) {
+        let index = self.selected;
+        let mut name = String::new();
+        let result = self.mutate(|c| {
+            name = c.duplicate(index)?;
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.select_routine(index + 1);
+                self.info(format!("cópia '{name}' criada (desativada)"));
+            }
+            Err(err) => self.error(format!("{err:#}")),
+        }
+    }
+
     /// Livre vira agendada pedindo um gatilho; agendada vira livre com confirmação.
     fn toggle_kind(&mut self) {
         match self.routine().map(Routine::is_scheduled) {
@@ -635,17 +1030,71 @@ impl App {
     }
 
     /// Roda a rotina num processo separado, com tempo para trocar de janela.
-    fn run_selected(&mut self) {
+    fn run_selected(&mut self, selection: Selection) {
         let Some(name) = self.routine().map(|r| r.name.clone()) else { return };
-        match spawn_run(&name, "manual", TUI_RUN_DELAY_MS) {
+        if self.running.contains_key(&name) {
+            return self.error(format!("'{name}' já está rodando (s para parar)"));
+        }
+        match spawn_run(&name, "manual", TUI_RUN_DELAY_MS, selection) {
             Ok(child) => {
                 self.children.push(child);
                 self.info(format!(
-                    "'{name}' começa em {:.1}s (L mostra o log)",
+                    "'{name}' começa em {:.1}s",
                     TUI_RUN_DELAY_MS as f64 / 1000.0
                 ));
             }
             Err(err) => self.error(format!("falha ao executar: {err}")),
+        }
+    }
+
+    /// Depuração: roda só o passo ou a partir dele.
+    fn run_step(&mut self, index: usize, selection: Selection) {
+        let step = self.routine().and_then(|r| r.steps.get(index).cloned());
+        if step.is_none_or(|s| is_comment(&s)) {
+            return self.error("comentário não executa; escolha um passo");
+        }
+        self.run_selected(selection);
+    }
+
+    fn stop_selected(&mut self) {
+        let Some(progress) = self.routine().and_then(|r| self.running.get(&r.name)).cloned() else {
+            return self.error("a rotina não está rodando");
+        };
+        match progress::stop(&progress) {
+            Ok(()) => {
+                self.running.remove(&progress.routine);
+                self.info(format!("'{}' interrompida", progress.routine));
+            }
+            Err(err) => self.error(format!("{err:#}")),
+        }
+    }
+
+    fn open_history(&mut self, only: Option<String>) {
+        let runs: Vec<Run> = self
+            .runs
+            .iter()
+            .rev()
+            .filter(|run| only.as_ref().is_none_or(|name| &run.routine == name))
+            .cloned()
+            .collect();
+        self.open_modal(Modal::History {
+            runs,
+            selected: 0,
+            only,
+        });
+    }
+
+    /// Seleciona a rotina e o passo que falhou na execução.
+    fn jump_to(&mut self, run: &Run) {
+        let Some(index) = self.index_of(&run.routine) else {
+            return self.error(format!("a rotina '{}' não existe mais", run.routine));
+        };
+        self.filter = None;
+        self.select_routine(index);
+        if let Some(line) = run.failed_line {
+            self.focus = Pane::Steps;
+            self.step_selected = line.saturating_sub(1);
+            self.clamp();
         }
     }
 
@@ -685,33 +1134,77 @@ impl App {
         let start = lines.len().saturating_sub(LOG_TAIL);
         let lines = lines[start..].to_vec();
         let scroll = lines.len().saturating_sub(1);
-        self.modal = Some(Modal::Log { lines, scroll });
+        self.open_modal(Modal::Log { lines, scroll });
     }
 
-    /// Executa gravação ou editor com o terminal liberado.
-    pub fn run_external(&mut self, external: External) {
-        let result = match external {
-            External::Record => self.record(),
-            External::Editor => self.edit_in_editor(),
+    fn start_recording(&mut self) {
+        let Some(routine) = self.routine().map(|r| r.name.clone()) else { return };
+        self.recording = Some(Recording {
+            session: recorder::start(),
+            routine,
+            phase: RecPhase::Countdown(crate::constants::RECORD_COUNTDOWN_SECS),
+            steps: Vec::new(),
+            started: None,
+            last_step: Instant::now(),
+        });
+    }
+
+    /// Consome os eventos da gravação em andamento.
+    fn poll_recording(&mut self) {
+        let Some(recording) = self.recording.as_mut() else { return };
+        let outcome = loop {
+            match recording.session.events.try_recv() {
+                Ok(RecordEvent::Countdown(n)) => recording.phase = RecPhase::Countdown(n),
+                Ok(RecordEvent::Started) => {
+                    recording.phase = RecPhase::Recording;
+                    recording.started = Some(Instant::now());
+                }
+                Ok(RecordEvent::Paused(paused)) => {
+                    recording.phase = if paused { RecPhase::Paused } else { RecPhase::Recording };
+                }
+                Ok(RecordEvent::Step(step)) => {
+                    recording.steps.push(step);
+                    recording.last_step = Instant::now();
+                }
+                Ok(RecordEvent::Done(steps)) => break Some(Ok(steps)),
+                Ok(RecordEvent::Failed(err)) => break Some(Err(err)),
+                Err(TryRecvError::Empty) => break None,
+                Err(TryRecvError::Disconnected) => break Some(Err("gravação interrompida".into())),
+            }
         };
-        if let Err(err) = result {
-            self.error(format!("{}: {err:#}", external.label()));
+        let Some(outcome) = outcome else { return };
+        let routine = recording.routine.clone();
+        self.recording = None;
+        let result = outcome.map_err(anyhow::Error::msg).and_then(|steps| {
+            let total = steps.len();
+            self.mutate(|c| {
+                c.routine_or_create(&routine)?.steps.extend(steps);
+                Ok(())
+            })?;
+            Ok(total)
+        });
+        match result {
+            Ok(total) => {
+                if let Some(index) = self.index_of(&routine) {
+                    self.select_routine(index);
+                }
+                self.focus = Pane::Steps;
+                self.step_selected = self.routine().map_or(0, |r| r.steps.len().saturating_sub(1));
+                self.info(format!("{total} passo(s) gravados em '{routine}'"));
+            }
+            Err(err) => self.error(format!("gravação: {err:#}")),
         }
     }
 
-    fn record(&mut self) -> Result<()> {
-        let steps = recorder::record(Hypr::detect().as_ref())?;
-        let total = steps.len();
-        self.mutate_routine(|r| {
-            r.steps.extend(steps);
-        })?;
-        self.step_selected = self.routine().map_or(0, |r| r.steps.len().saturating_sub(1));
-        self.info(format!("{total} passo(s) gravados"));
-        Ok(())
+    /// Edita todos os passos no $EDITOR; erro guarda o rascunho para tentar de novo.
+    pub fn edit_in_editor(&mut self) {
+        let result = self.run_editor();
+        if let Err(err) = result {
+            self.error(format!("editor: {err:#}"));
+        }
     }
 
-    /// Edita todos os passos no $EDITOR; erro guarda o rascunho para tentar de novo.
-    fn edit_in_editor(&mut self) -> Result<()> {
+    fn run_editor(&mut self) -> Result<()> {
         let Some(routine) = self.routine() else { return Ok(()) };
         let name = routine.name.clone();
         let current = routine.steps.join("\n");
@@ -719,7 +1212,7 @@ impl App {
         let content = format!("{}\n{body}\n", editor_header(&name));
         let dir = runtime_dir()?;
         std::fs::create_dir_all(&dir)?;
-        let file = dir.join(format!("{name}.pwb"));
+        let file = dir.join(format!("{name}.pcue"));
         std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -803,8 +1296,13 @@ fn moved(index: usize, len: usize, key: KeyCode) -> Option<usize> {
     match key {
         KeyCode::Up | KeyCode::Char('k') => Some(index.saturating_sub(1)),
         KeyCode::Down | KeyCode::Char('j') => Some((index + 1).min(len.saturating_sub(1))),
+        KeyCode::PageUp => Some(index.saturating_sub(10)),
+        KeyCode::PageDown => Some((index + 10).min(len.saturating_sub(1))),
+        KeyCode::Home => Some(0),
+        KeyCode::End => Some(len.saturating_sub(1)),
         _ => None,
     }
 }
+
 const DAILY_HINT: &str = "HH:MM e dias opcionais, ex.: 09:00 seg,ter,qua,qui,sex";
 const INTERVAL_HINT: &str = "ex.: 30m, 2h ou 1.5h (mínimo 1m)";

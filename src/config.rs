@@ -20,6 +20,13 @@ pub struct Config {
     pub routines: Vec<Routine>,
 }
 
+/// Rotinas avulsas para exportar e importar.
+#[derive(Debug, Serialize, Deserialize)]
+struct Bundle {
+    #[serde(default, rename = "routine")]
+    routines: Vec<Routine>,
+}
+
 /// Ajustes globais.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -203,6 +210,50 @@ impl Config {
             }
         };
         Ok(&mut self.routines[index])
+    }
+
+    /// `base`, ou `base_2`, `base_3`... se já existir.
+    pub fn unique_name(&self, base: &str) -> String {
+        (1..)
+            .map(|n| if n == 1 { base.to_string() } else { format!("{base}_{n}") })
+            .find(|name| self.find(name).is_none())
+            .expect("sempre há um nome livre")
+    }
+
+    /// Copia a rotina com nome novo; a cópia nasce desativada.
+    pub fn duplicate(&mut self, index: usize) -> Result<String> {
+        let mut copy = self.routines.get(index).context("rotina inexistente")?.clone();
+        copy.name = self.unique_name(&format!("{}_copia", copy.name));
+        copy.enabled = false;
+        let name = copy.name.clone();
+        self.routines.insert(index + 1, copy);
+        Ok(name)
+    }
+
+    /// Grava a rotina num arquivo TOML avulso.
+    pub fn export(&self, name: &str, path: &Path) -> Result<()> {
+        let routine = self.find(name).context("rotina inexistente")?.clone();
+        let bundle = Bundle { routines: vec![routine] };
+        std::fs::write(path, toml::to_string_pretty(&bundle)?)
+            .with_context(|| format!("falha ao gravar {}", path.display()))
+    }
+
+    /// Acrescenta as rotinas do arquivo, renomeando nomes repetidos.
+    pub fn import(&mut self, path: &Path) -> Result<Vec<String>> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("falha ao ler {}", path.display()))?;
+        let bundle: Bundle = toml::from_str(&raw).context("arquivo não é uma rotina do pcue")?;
+        if bundle.routines.is_empty() {
+            bail!("nenhuma rotina no arquivo");
+        }
+        let mut names = Vec::new();
+        for mut routine in bundle.routines {
+            routine.name = self.unique_name(&routine.name);
+            names.push(routine.name.clone());
+            self.routines.push(routine);
+        }
+        self.validate()?;
+        Ok(names)
     }
 
     /// Nomes únicos e rotinas coerentes.

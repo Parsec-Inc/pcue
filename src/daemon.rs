@@ -10,11 +10,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use jiff::Zoned;
 
 use crate::config::{Config, Trigger, validate_name};
-use crate::constants::{DAEMON_TICK, EVENT_DEDUP_WINDOW};
-use crate::runner::spawn_run;
+use crate::constants::{DAEMON_TICK, EVENT_DEDUP_WINDOW, NEXT_RUNS_FILE};
+use crate::runner::{Selection, spawn_run};
 use crate::schedule::{Weekday, next_daily};
 use crate::script::parse_duration;
-use crate::utils::{config_path, daemon_socket, log};
+use crate::utils::{config_path, daemon_socket, log, read_json, runtime_dir, write_atomic};
 
 /// Processo de fundo: dispara rotinas por evento e horário.
 pub fn run_daemon(restarted: bool) -> Result<()> {
@@ -162,12 +162,30 @@ impl Due {
         }
     }
 
+    /// Momento do próximo disparo, em segundos Unix.
+    fn next_unix(&self, now: &Zoned, instant: Instant) -> i64 {
+        match self {
+            Due::At { next, .. } => next.timestamp().as_second(),
+            Due::Every { next, .. } => {
+                now.timestamp().as_second() + next.saturating_duration_since(instant).as_secs() as i64
+            }
+        }
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Due::At { .. } => "horário",
             Due::Every { .. } => "intervalo",
         }
     }
+}
+
+/// Próximo disparo agendado de cada rotina, em segundos Unix.
+pub fn next_runs() -> HashMap<String, i64> {
+    runtime_dir()
+        .ok()
+        .and_then(|dir| read_json(&dir.join(NEXT_RUNS_FILE)))
+        .unwrap_or_default()
 }
 
 /// Estado do agendador.
@@ -210,6 +228,23 @@ impl Daemon {
                     .map(|due| (r.name.clone(), due))
             })
             .collect();
+        self.publish_next();
+    }
+
+    /// Grava o próximo disparo de cada rotina para a TUI.
+    fn publish_next(&self) {
+        let (now, instant) = (Zoned::now(), Instant::now());
+        let mut next: HashMap<&str, i64> = HashMap::new();
+        for (name, due) in &self.schedule {
+            let at = due.next_unix(&now, instant);
+            next.entry(name).and_modify(|t| *t = (*t).min(at)).or_insert(at);
+        }
+        let result = serde_json::to_vec(&next)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| write_atomic(&runtime_dir()?.join(NEXT_RUNS_FILE), &bytes));
+        if let Err(err) = result {
+            log(&format!("falha ao publicar próximos disparos: {err:#}"));
+        }
     }
 
     /// Relê a config quando o arquivo muda; config inválida mantém a anterior.
@@ -265,6 +300,9 @@ impl Daemon {
             fired.push((name.clone(), due.label()));
             due.advance(&now, instant)
         });
+        if !fired.is_empty() {
+            self.publish_next();
+        }
         for (name, label) in fired {
             self.spawn(&name, label);
         }
@@ -272,7 +310,7 @@ impl Daemon {
 
     /// Roda a rotina num processo filho.
     fn spawn(&mut self, routine: &str, trigger: &str) {
-        match spawn_run(routine, trigger, 0) {
+        match spawn_run(routine, trigger, 0, Selection::All) {
             Ok(child) => self.children.push(child),
             Err(err) => log(&format!("[{routine}] falha ao iniciar: {err}")),
         }

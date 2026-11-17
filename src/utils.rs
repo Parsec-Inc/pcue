@@ -14,6 +14,31 @@ pub fn home_dir() -> Result<PathBuf> {
         .context("variável HOME não definida")
 }
 
+/// Grava via arquivo temporário + rename, sem leitor ver arquivo pela metade.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Lê um JSON; ausente ou inválido vira `None`.
+pub fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// Troca o `~` inicial pelo home.
+pub fn expand_home(path: &str) -> Result<PathBuf> {
+    match path.strip_prefix("~/") {
+        Some(rest) => Ok(home_dir()?.join(rest)),
+        None if path == "~" => home_dir(),
+        None => Ok(PathBuf::from(path)),
+    }
+}
+
 /// Caminho XDG com fallback relativo ao home.
 pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     match std::env::var_os(var) {

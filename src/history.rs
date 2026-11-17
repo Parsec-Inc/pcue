@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 
@@ -17,6 +16,9 @@ pub struct Run {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Linha do script que falhou.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_line: Option<usize>,
 }
 
 /// Acrescenta a execução ao histórico.
@@ -35,14 +37,13 @@ pub fn modified() -> Option<std::time::SystemTime> {
     std::fs::metadata(history_path().ok()?).and_then(|m| m.modified()).ok()
 }
 
-/// Última execução de cada rotina.
-pub fn latest() -> HashMap<String, Run> {
-    let Ok(path) = history_path() else { return HashMap::new() };
-    let Ok(file) = std::fs::File::open(path) else { return HashMap::new() };
+/// Todas as execuções, da mais antiga para a mais recente.
+pub fn all() -> Vec<Run> {
+    let Ok(path) = history_path() else { return Vec::new() };
+    let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
     BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str::<Run>(&line).ok())
-        .map(|run| (run.routine.clone(), run))
         .collect()
 }

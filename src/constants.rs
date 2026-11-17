@@ -47,3 +47,10 @@ pub const BUILTIN_EVENTS: &[(&str, &str)] = &[
     ("monitor_added", "ao conectar um monitor (Hyprland)"),
     ("monitor_removed", "ao desconectar um monitor (Hyprland)"),
 ];
+
+/// Subdiretório de runtime com o progresso das execuções.
+pub const PROGRESS_DIR: &str = "progress";
+/// Subdiretório de runtime com as travas por rotina.
+pub const RUNNING_DIR: &str = "running";
+/// Próximos disparos publicados pelo daemon.
+pub const NEXT_RUNS_FILE: &str = "next.json";

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -16,34 +17,73 @@ use crate::script::{Button, ClickTarget, Step};
 /// Atalhos da gravação (sempre com SUPER).
 const PAUSE_KEY: Key = Key::KEY_F9;
 const STOP_KEY: Key = Key::KEY_F10;
+/// Frequência com que a gravação confere o pedido de parada.
+const STOP_POLL: Duration = Duration::from_millis(100);
 
-/// Grava teclado e mouse até SUPER+F10 e devolve os passos.
-pub fn record(hypr: Option<&Hypr>) -> Result<Vec<String>> {
-    let receiver = listen_devices()?;
-    println!("Gravando em {RECORD_COUNTDOWN_SECS}s. Troque para onde vai agir.");
-    println!("  SUPER+F9  pausa/retoma (use antes de digitar senhas)");
-    println!("  SUPER+F10 encerra e salva");
-    if hypr.is_none() {
-        println!("  sem Hyprland: cliques não terão posição e viram comentário");
+/// O que a gravação reporta enquanto acontece.
+#[derive(Debug, Clone)]
+pub enum RecordEvent {
+    Countdown(u64),
+    Started,
+    Paused(bool),
+    Step(String),
+    Done(Vec<String>),
+    Failed(String),
+}
+
+/// Gravação rodando numa thread própria.
+pub struct Session {
+    pub events: mpsc::Receiver<RecordEvent>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Session {
+    /// Encerra a gravação como SUPER+F10.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
+}
+
+/// Começa a gravar teclado e mouse até SUPER+F10 ou `Session::stop`.
+pub fn start() -> Session {
+    let (sender, events) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let result = record(&sender, &flag);
+        let _ = sender.send(match result {
+            Ok(steps) => RecordEvent::Done(steps),
+            Err(err) => RecordEvent::Failed(format!("{err:#}")),
+        });
+    });
+    Session { events, stop }
+}
+
+fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Vec<String>> {
+    let receiver = listen_devices()?;
+    let hypr = Hypr::detect();
     for remaining in (1..=RECORD_COUNTDOWN_SECS).rev() {
-        println!("  {remaining}...");
+        let _ = sender.send(RecordEvent::Countdown(remaining));
         std::thread::sleep(Duration::from_secs(1));
+        if stop.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
     }
     let start = Instant::now();
-    println!("● gravando");
+    let _ = sender.send(RecordEvent::Started);
 
-    let mut recorder = Recorder::new(hypr, start);
-    for (time, event) in receiver {
-        if time < start {
-            continue;
-        }
-        if recorder.handle(time, &event) == Flow::Stop {
+    let mut recorder = Recorder::new(hypr.as_ref(), start, sender);
+    while !stop.load(Ordering::Relaxed) {
+        let (time, event) = match receiver.recv_timeout(STOP_POLL) {
+            Ok(received) => received,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if time >= start && recorder.handle(time, &event) == Flow::Stop {
             break;
         }
     }
     recorder.flush();
-    println!("■ gravação encerrada: {} passo(s)", recorder.steps.len());
     Ok(recorder.steps)
 }
 
@@ -93,6 +133,7 @@ enum Flow {
 /// Acumula eventos crus em passos legíveis.
 struct Recorder<'a> {
     hypr: Option<&'a Hypr>,
+    sender: &'a mpsc::Sender<RecordEvent>,
     steps: Vec<String>,
     held: Vec<Key>,
     lone_modifier: Option<Key>,
@@ -105,9 +146,10 @@ struct Recorder<'a> {
 }
 
 impl<'a> Recorder<'a> {
-    fn new(hypr: Option<&'a Hypr>, start: Instant) -> Self {
+    fn new(hypr: Option<&'a Hypr>, start: Instant, sender: &'a mpsc::Sender<RecordEvent>) -> Self {
         Self {
             hypr,
+            sender,
             steps: Vec::new(),
             held: Vec::new(),
             lone_modifier: None,
@@ -146,7 +188,7 @@ impl<'a> Recorder<'a> {
         if self.super_held() && key == PAUSE_KEY {
             self.flush();
             self.paused = !self.paused;
-            println!("{}", if self.paused { "‖ pausado" } else { "● gravando" });
+            let _ = self.sender.send(RecordEvent::Paused(self.paused));
             return Flow::Continue;
         }
         if self.paused {
@@ -290,11 +332,15 @@ impl<'a> Recorder<'a> {
         let gap = time.saturating_duration_since(self.last);
         if !self.steps.is_empty() && gap >= RECORD_MIN_SLEEP {
             let rounded = gap.as_millis().div_ceil(RECORD_SLEEP_ROUNDING_MS) * RECORD_SLEEP_ROUNDING_MS;
-            self.steps
-                .push(Step::Sleep(Duration::from_millis(rounded as u64)).to_string());
+            self.emit(Step::Sleep(Duration::from_millis(rounded as u64)).to_string());
         }
-        self.steps.push(line);
+        self.emit(line);
         self.last = time;
+    }
+
+    fn emit(&mut self, line: String) {
+        let _ = self.sender.send(RecordEvent::Step(line.clone()));
+        self.steps.push(line);
     }
 }
 
