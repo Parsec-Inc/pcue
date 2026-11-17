@@ -44,7 +44,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
     let line = Line::from(vec![
-        Span::styled(" pwboot ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled(" pcue ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::raw(" "),
         chip(app.daemon_up, "daemon ativo", "daemon parado"),
         chip(app.installed, "no autostart", "fora do autostart"),
@@ -107,7 +107,7 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
             Line::from("Rotinas são sequências de passos: abrir apps em workspaces,"),
             Line::from("esperar janelas, atalhos, texto e cliques."),
             Line::from(""),
-            Line::from("Livres rodam quando você chama (Enter aqui, ou `pwboot run nome`)."),
+            Line::from("Livres rodam quando você chama (Enter aqui, ou `pcue run nome`)."),
             Line::from("Agendadas rodam sozinhas por evento (login, desbloqueio...) ou horário."),
         ])
         .fg(MUTED)
@@ -355,9 +355,9 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 const HELP_ROUTINES: &[&str] = &[
     "Rotinas",
-    "  livre     roda quando chamada: Enter na TUI, `pwboot run nome` ou um atalho do Hyprland",
+    "  livre     roda quando chamada: Enter na TUI, `pcue run nome` ou um atalho do Hyprland",
     "  agendada  roda pelo daemon: eventos (login, lock, unlock, resume, monitor_*),",
-    "            horário diário ou intervalo; eventos próprios via `pwboot emit nome`",
+    "            horário diário ou intervalo; eventos próprios via `pcue emit nome`",
     "",
     "Passos",
 ];

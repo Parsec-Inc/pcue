@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::constants::{BLOCK_BEGIN, BLOCK_END};
+use crate::constants::{BLOCK_BEGIN, BLOCK_END, LEGACY_NAME};
 use crate::utils::{hypr_config_dir, lua_str, xdg_autostart_file};
 
 /// Onde e como o bloco de autostart é escrito.
@@ -40,7 +40,7 @@ pub fn install() -> Result<PathBuf> {
         ),
         Style::HyprConf => format!("exec-once = {command}"),
         Style::XdgDesktop => format!(
-            "[Desktop Entry]\nType=Application\nName=pwboot\nComment=Rotinas pós-login\nExec={command}\nX-GNOME-Autostart-enabled=true"
+            "[Desktop Entry]\nType=Application\nName=pcue\nComment=Rotinas pós-login\nExec={command}\nX-GNOME-Autostart-enabled=true"
         ),
     };
     if let Some(dir) = target.file.parent() {
@@ -53,7 +53,7 @@ pub fn install() -> Result<PathBuf> {
     Ok(target.file)
 }
 
-/// Remove o bloco do pwboot da config do Hyprland.
+/// Remove o bloco do pcue da config do Hyprland.
 pub fn uninstall() -> Result<Option<PathBuf>> {
     let target = target()?;
     let current = read_or_empty(&target.file)?;
@@ -108,11 +108,11 @@ fn read_or_empty(path: &Path) -> Result<String> {
     }
 }
 
-/// Grava guardando a versão anterior em `.pwboot.bak`.
+/// Grava guardando a versão anterior em `.pcue.bak`.
 fn write_with_backup(path: &Path, previous: &str, updated: &str) -> Result<()> {
     if !previous.is_empty() {
         let mut backup = path.as_os_str().to_owned();
-        backup.push(".pwboot.bak");
+        backup.push(".pcue.bak");
         std::fs::write(&backup, previous)?;
     }
     std::fs::write(path, updated).with_context(|| format!("falha ao gravar {}", path.display()))
@@ -128,10 +128,17 @@ fn upsert_block(content: &str, comment: &str, body: &str) -> String {
     out
 }
 
-/// Tira o bloco delimitado, se existir.
+/// Tira o bloco delimitado (atual e o do nome antigo), se existir.
 fn strip_block(content: &str, comment: &str) -> String {
-    let begin = format!("{comment} {BLOCK_BEGIN}");
-    let end = format!("{comment} {BLOCK_END}");
+    let legacy_begin = format!(">>> {LEGACY_NAME} >>>");
+    let legacy_end = format!("<<< {LEGACY_NAME} <<<");
+    let legacy = strip_markers(content, comment, &legacy_begin, &legacy_end);
+    strip_markers(&legacy, comment, BLOCK_BEGIN, BLOCK_END)
+}
+
+fn strip_markers(content: &str, comment: &str, begin: &str, end: &str) -> String {
+    let begin = format!("{comment} {begin}");
+    let end = format!("{comment} {end}");
     let (Some(start), Some(stop)) = (content.find(&begin), content.find(&end)) else {
         return content.to_string();
     };
@@ -152,7 +159,7 @@ mod tests {
     fn upsert_then_strip_restores_original() {
         let original = "hl.config({})\n";
         let with = upsert_block(original, "--", "hl.exec_cmd(\"x\")");
-        assert!(with.contains("-- >>> pwboot >>>"));
+        assert!(with.contains("-- >>> pcue >>>"));
         assert_eq!(strip_block(&with, "--"), original);
     }
 

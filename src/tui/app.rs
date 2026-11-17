@@ -386,7 +386,7 @@ impl App {
             .iter()
             .map(|(name, desc)| ((*name).to_string(), (*desc).to_string()))
             .collect();
-        options.push(("personalizado…".into(), "disparado por `pwboot emit <nome>`".into()));
+        options.push(("personalizado…".into(), "disparado por `pcue emit <nome>`".into()));
         self.modal = Some(Modal::Pick {
             title: "Evento".into(),
             options,
@@ -405,7 +405,7 @@ impl App {
             }
             Trigger::Event { event } => self.open_input(
                 "Evento personalizado",
-                "nome do evento (pwboot emit <nome>)",
+                "nome do evento (pcue emit <nome>)",
                 &event,
                 InputPurpose::CustomEvent(Some(index)),
             ),
@@ -561,7 +561,7 @@ impl App {
             },
             PickPurpose::Event(editing) if index >= BUILTIN_EVENTS.len() => self.open_input(
                 "Evento personalizado",
-                "nome do evento (pwboot emit <nome>)",
+                "nome do evento (pcue emit <nome>)",
                 "",
                 InputPurpose::CustomEvent(editing),
             ),

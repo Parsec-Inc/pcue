@@ -22,6 +22,19 @@ pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     }
 }
 
+/// Move config e estado do nome antigo, se ainda não migrados.
+pub fn migrate_legacy() {
+    for (var, fallback) in [("XDG_CONFIG_HOME", ".config"), ("XDG_STATE_HOME", ".local/state")] {
+        let Ok(base) = xdg_dir(var, fallback) else { continue };
+        let (old, new) = (base.join(crate::constants::LEGACY_NAME), base.join(APP_NAME));
+        if old.is_dir() && !new.exists() {
+            let _ = std::fs::rename(&old, &new);
+            let legacy_log = new.join(format!("{}.log", crate::constants::LEGACY_NAME));
+            let _ = std::fs::rename(legacy_log, new.join(LOG_FILE));
+        }
+    }
+}
+
 /// Arquivo de configuração da tool.
 pub fn config_path() -> Result<PathBuf> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join(APP_NAME).join(CONFIG_FILE))
@@ -56,7 +69,7 @@ pub fn xdg_runtime_base() -> Result<PathBuf> {
         .context("XDG_RUNTIME_DIR não definida")
 }
 
-/// Diretório de arquivos temporários do pwboot.
+/// Diretório de arquivos temporários do pcue.
 pub fn runtime_dir() -> Result<PathBuf> {
     Ok(xdg_runtime_base()?.join(APP_NAME))
 }

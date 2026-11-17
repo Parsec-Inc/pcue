@@ -28,7 +28,7 @@ use crate::utils::{config_path, history_path, log_path};
 
 /// Rotinas pós-login: abre apps nos workspaces, grava e reproduz ações.
 #[derive(Parser)]
-#[command(name = "pwboot", version)]
+#[command(name = "pcue", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -80,6 +80,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    utils::migrate_legacy();
     let path = config_path()?;
     match cli.command.unwrap_or(Command::Tui) {
         Command::Tui => tui::run(path),
@@ -96,7 +97,7 @@ fn main() -> Result<()> {
         Command::List => {
             let config = Config::load(&path)?;
             if config.routines.is_empty() {
-                println!("nenhuma rotina (abra `pwboot` para criar)");
+                println!("nenhuma rotina (abra `pcue` para criar)");
             }
             for routine in &config.routines {
                 let kind = if routine.is_scheduled() {
@@ -132,13 +133,13 @@ fn main() -> Result<()> {
         Command::Install => {
             let file = install::install()?;
             println!("daemon registrado em {}", file.display());
-            println!("vale no próximo login; para iniciar agora: pwboot daemon &");
+            println!("vale no próximo login; para iniciar agora: pcue daemon &");
             Ok(())
         }
         Command::Uninstall => {
             match install::uninstall()? {
                 Some(file) => println!("daemon removido de {}", file.display()),
-                None => println!("pwboot não estava no autostart"),
+                None => println!("pcue não estava no autostart"),
             }
             Ok(())
         }

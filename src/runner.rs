@@ -39,7 +39,7 @@ pub fn run_routine(config: &Config, name: &str, trigger: &str) -> Result<()> {
         None => log(&format!("[{name}] concluída")),
         Some(err) => {
             log(&format!("[{name}] falhou: {err}"));
-            notify("pwboot", &format!("Rotina {name} falhou: {err}"));
+            notify("pcue", &format!("Rotina {name} falhou: {err}"));
         }
     }
     result

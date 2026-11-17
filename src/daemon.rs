@@ -102,7 +102,7 @@ pub fn is_running() -> bool {
 pub fn emit(event: &str) -> Result<()> {
     validate_name(event)?;
     let mut stream = UnixStream::connect(daemon_socket()?)
-        .map_err(|_| anyhow!("daemon não está rodando (pwboot daemon)"))?;
+        .map_err(|_| anyhow!("daemon não está rodando (pcue daemon)"))?;
     writeln!(stream, "emit {event}")?;
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;

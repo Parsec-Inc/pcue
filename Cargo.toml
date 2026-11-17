@@ -1,5 +1,5 @@
 [package]
-name = "pwboot"
+name = "pcue"
 version = "0.1.0"
 edition = "2024"
 description = "Abre apps no login do Hyprland, cada um no seu workspace"
