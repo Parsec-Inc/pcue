@@ -4,18 +4,23 @@ Tudo sai de `scripts/package.sh`, o mesmo script no seu computador e no CI.
 
 ## Como sai uma release
 
-Todo push na `main` roda `.github/workflows/release.yml`:
+Os testes (`tests.yml`: clippy e `cargo test` nativos no Linux e no Windows) rodam em todo push
+fora da `main`; um push novo na mesma branch cancela o teste anterior.
 
-1. **tests**: clippy e `cargo test` nativos no Linux e no Windows.
-2. **bump**: o commitizen calcula a versão pelos commits (`feat` sobe minor, `fix` sobe patch),
-   atualiza `Cargo.toml`, `Cargo.lock` e `CHANGELOG.md`, cria a tag e dá push. Sem commit
-   relevante, para aqui. Para forçar, rode o workflow à mão escolhendo o incremento.
-3. **linux**: binário estático (musl) e `.exe` (mingw), `.deb`, `.rpm`, `.src.rpm` do COPR e
+A release roda quando um PR é mergeado na `main` (`.github/workflows/release.yml`):
+
+1. **tests** e **version** começam juntos. O `version` roda o commitizen, que calcula a versão
+   pelos commits (`feat` sobe minor, `fix` sobe patch) e cria localmente o commit do bump
+   (`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`) e a tag, passados aos outros jobs num git bundle.
+   Sem commit relevante, para aqui. Para forçar, rode o workflow à mão na `main` escolhendo o
+   incremento.
+2. **linux**: binário estático (musl) e `.exe` (mingw), `.deb`, `.rpm`, `.src.rpm` do COPR e
    PKGBUILD do AUR.
-4. **msi**: no runner Windows, empacota o mesmo `.exe` com o WiX 3.
-5. **release**: junta tudo, gera `SHA256SUMS` e cria a release. Se o MSI falhar, a release sai sem
-   ele; o job linux é obrigatório porque o `pcue update` baixa os binários dele.
-6. **aur** e **copr**: só rodam se as variáveis do repositório estiverem ligadas (abaixo).
+3. **msi**: no runner Windows, empacota o mesmo `.exe` com o WiX 3.
+4. **release**: só com os testes e o linux verdes. Dá push do commit do bump e da tag na `main`,
+   gera `SHA256SUMS` e cria a release. Se o MSI falhar, a release sai sem ele; o job linux é
+   obrigatório porque o `pcue update` baixa os binários dele.
+5. **aur** e **copr**: só rodam se as variáveis do repositório estiverem ligadas (abaixo).
 
 ## Build local
 
