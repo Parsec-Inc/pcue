@@ -1,3 +1,9 @@
+## 0.3.1 (2026-11-17)
+
+### Fix
+
+- **build**: spec do rpm com caminhos literais (o rpm do Ubuntu não tem as macros do systemd)
+
 ## 0.3.0 (2026-11-17)
 
 ### Feat
