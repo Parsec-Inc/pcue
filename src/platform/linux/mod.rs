@@ -321,11 +321,35 @@ pub const ASSET_SUFFIX: &str = "linux-x86_64";
 
 /// Troca o executável pelo novo; o rename funciona com ele em execução.
 pub fn replace_exe(exe: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = exe.with_extension("new");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    std::fs::rename(&tmp, exe).with_context(|| format!("falha ao substituir {}", exe.display()))
+    match write_executable(&tmp, bytes) {
+        Ok(()) => std::fs::rename(&tmp, exe).with_context(|| format!("falha ao substituir {}", exe.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => replace_as_root(exe, bytes),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Instalado por pacote: grava fora e pede a senha pelo pkexec para trocar.
+fn replace_as_root(exe: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let tmp = std::env::temp_dir().join(format!("pcue-update-{}", std::process::id()));
+    write_executable(&tmp, bytes)?;
+    let status = Command::new("pkexec")
+        .args(["/bin/sh", "-c", r#"install -m755 "$0" "$1.new" && mv -f "$1.new" "$1""#])
+        .arg(&tmp)
+        .arg(exe)
+        .status();
+    let _ = std::fs::remove_file(&tmp);
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => bail!("senha recusada ou cancelada"),
+        Err(_) => bail!("pkexec não encontrado; atualize pelo gerenciador de pacotes"),
+    }
+}
+
+fn write_executable(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, bytes)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 /// Processo filho sem terminal (no Linux não há janela a esconder).

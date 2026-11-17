@@ -233,12 +233,44 @@ pub const ASSET_SUFFIX: &str = "windows-x86_64.exe";
 pub fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<()> {
     let old = exe.with_extension("old.exe");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old).context("não foi possível afastar o executável atual")?;
+    match std::fs::rename(exe, &old) {
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return replace_as_admin(exe, &old, bytes),
+        result => result.context("não foi possível afastar o executável atual")?,
+    }
     if let Err(err) = std::fs::write(exe, bytes) {
         let _ = std::fs::rename(&old, exe);
         return Err(err).context("não foi possível gravar o executável novo");
     }
     Ok(())
+}
+
+/// Pasta protegida (ex.: Program Files): pede elevação pelo UAC para trocar.
+fn replace_as_admin(exe: &Path, old: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = std::env::temp_dir();
+    let new = dir.join("pcue-update.exe");
+    let script = dir.join("pcue-update.cmd");
+    std::fs::write(&new, bytes)?;
+    let (exe, old, new_path) = (exe.display(), old.display(), new.display());
+    std::fs::write(
+        &script,
+        format!(
+            "@echo off\r\nmove /y \"{exe}\" \"{old}\" >nul || exit /b 1\r\n\
+             move /y \"{new_path}\" \"{exe}\" >nul || (move /y \"{old}\" \"{exe}\" >nul & exit /b 1)\r\n"
+        ),
+    )?;
+    let mut command = Command::new("powershell");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg("$p = Start-Process -FilePath $env:PCUE_UPDATE_SCRIPT -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode")
+        .env("PCUE_UPDATE_SCRIPT", &script);
+    background(&mut command);
+    let status = command.status();
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&new);
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        _ => bail!("o Windows não autorizou a troca do executável (UAC recusado?)"),
+    }
 }
 
 /// Processo filho sem janela de console.
