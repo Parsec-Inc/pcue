@@ -21,8 +21,8 @@ usuário da sessão acesso ao teclado, mouse e uinput.
 
 %install
 install -Dm755 %{SOURCE0} %{buildroot}%{_bindir}/pcue
-install -Dm644 %{SOURCE1} %{buildroot}%{_udevrulesdir}/70-pcue.rules
-install -Dm644 %{SOURCE2} %{buildroot}%{_modulesloaddir}/pcue.conf
+install -Dm644 %{SOURCE1} %{buildroot}%{_prefix}/lib/udev/rules.d/70-pcue.rules
+install -Dm644 %{SOURCE2} %{buildroot}%{_prefix}/lib/modules-load.d/pcue.conf
 install -Dm755 %{SOURCE3} %{buildroot}%{_datadir}/pcue/postinst
 
 %post
@@ -30,6 +30,6 @@ sh %{_datadir}/pcue/postinst
 
 %files
 %{_bindir}/pcue
-%{_udevrulesdir}/70-pcue.rules
-%{_modulesloaddir}/pcue.conf
+%{_prefix}/lib/udev/rules.d/70-pcue.rules
+%{_prefix}/lib/modules-load.d/pcue.conf
 %{_datadir}/pcue/postinst
