@@ -6,7 +6,7 @@ Tudo sai de `scripts/package.sh`, o mesmo script no seu computador e no CI.
 
 Todo push na `main` roda `.github/workflows/release.yml`:
 
-1. **tests**: clippy (Linux e Windows) e `cargo test`.
+1. **tests**: clippy e `cargo test` nativos no Linux e no Windows.
 2. **bump**: o commitizen calcula a versão pelos commits (`feat` sobe minor, `fix` sobe patch),
    atualiza `Cargo.toml`, `Cargo.lock` e `CHANGELOG.md`, cria a tag e dá push. Sem commit
    relevante, para aqui. Para forçar, rode o workflow à mão escolhendo o incremento.
