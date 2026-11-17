@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::{Regex, RegexBuilder};
 
 use crate::config::Workspace;
@@ -60,14 +60,26 @@ pub fn wait_any_window(hypr: &Hypr, class: &str, timeout: Duration) -> Result<Cl
         .with_context(|| format!("nenhuma janela {class} em {}s", timeout.as_secs()))
 }
 
-/// Primeira janela com a class, preferindo a visível usada por último.
-pub fn find_window(hypr: &Hypr, class: &str) -> Result<Option<Client>> {
+/// Janelas da class em ordem de abertura.
+pub fn windows_of(clients: Vec<Client>, re: &Regex) -> Vec<Client> {
+    let mut windows: Vec<Client> = clients.into_iter().filter(|c| matches_class(re, c)).collect();
+    windows.sort_by_key(Client::opened_order);
+    windows
+}
+
+/// A n-ésima janela da class (1 = a mais antiga), esperando ela existir.
+pub fn nth_window(hypr: &Hypr, class: &str, nth: usize, timeout: Duration) -> Result<Client> {
     let re = class_regex(class)?;
-    Ok(hypr
-        .clients()?
-        .into_iter()
-        .filter(|c| matches_class(&re, c))
-        .min_by_key(|c| (!c.on_screen(), c.focus_history_id)))
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(window) = windows_of(hypr.clients()?, &re).into_iter().nth(nth - 1) {
+            return Ok(window);
+        }
+        if Instant::now() >= deadline {
+            bail!("não há {nth}ª janela {class} após {}s", timeout.as_secs());
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// Faz polling até surgir uma janela fora de `seen` com a class.

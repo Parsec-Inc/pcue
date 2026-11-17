@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::constants::CLICK_MOVE_SETTLE;
 use crate::hypr::Hypr;
 use crate::input::VirtualInput;
-use crate::launcher::{LaunchSpec, find_window, launch, wait_any_window};
+use crate::launcher::{LaunchSpec, launch, nth_window, wait_any_window};
 use crate::script::{ClickTarget, Line, Step};
 use crate::utils::log;
 
@@ -70,7 +70,7 @@ fn run_step(
             let Some(hypr) = hypr else {
                 bail!("click precisa do Hyprland para posicionar o cursor");
             };
-            let (x, y) = resolve_click(hypr, target)?;
+            let (x, y) = resolve_click(hypr, target, timeout)?;
             hypr.move_cursor(x, y)?;
             std::thread::sleep(CLICK_MOVE_SETTLE);
             device(input)?.click(*button)
@@ -79,15 +79,14 @@ fn run_step(
 }
 
 /// Posição global do clique; janela-alvo é focada antes.
-fn resolve_click(hypr: &Hypr, target: &ClickTarget) -> Result<(i32, i32)> {
+fn resolve_click(hypr: &Hypr, target: &ClickTarget, timeout: Duration) -> Result<(i32, i32)> {
     match target {
         ClickTarget::Absolute { x, y } => Ok((*x, *y)),
-        ClickTarget::Window { class, x, y } => {
-            let window = find_window(hypr, class)?
-                .with_context(|| format!("nenhuma janela {class} para clicar"))?;
+        ClickTarget::Window { class, nth, x, y } => {
+            let window = nth_window(hypr, class, *nth, timeout)?;
             hypr.focus_window(&window.address)?;
             std::thread::sleep(CLICK_MOVE_SETTLE);
-            let window = find_window(hypr, class)?.unwrap_or(window);
+            let window = nth_window(hypr, class, *nth, timeout)?;
             Ok((window.at[0] + x, window.at[1] + y))
         }
     }

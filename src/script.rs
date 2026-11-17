@@ -13,7 +13,7 @@ pub const SYNTAX: &[&str] = &[
     "launch \"cmd\" [workspace=N] [class=REGEX] [focus] [always]",
     "wait_window class=REGEX [timeout=30s]      sleep 500ms | 2s | 1m | 1h",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
-    "click [left|right|middle] X,Y   ou   click window=REGEX at=X,Y",
+    "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
     "# comentário",
 ];
 
@@ -53,7 +53,13 @@ pub enum Button {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClickTarget {
     Absolute { x: i32, y: i32 },
-    Window { class: String, x: i32, y: i32 },
+    /// `nth` conta as janelas da class por ordem de abertura, a partir de 1.
+    Window {
+        class: String,
+        nth: usize,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// Linha do script com o número original, para mensagens de erro.
@@ -128,7 +134,7 @@ pub fn parse_line(line: &str) -> Result<Step> {
     Ok(step)
 }
 
-/// `click [left|right|middle] X,Y` ou `click [botão] window=CLASS at=X,Y`.
+/// `click [left|right|middle] X,Y` ou `click [botão] window=CLASS [nth=N] at=X,Y`.
 fn parse_click(options: &mut Options) -> Result<Step> {
     let mut button = Button::Left;
     if let Some(name) = options.peek_positional()
@@ -139,7 +145,11 @@ fn parse_click(options: &mut Options) -> Result<Step> {
     let target = match options.take("window") {
         Some(class) => {
             let (x, y) = parse_point(&options.required("at")?)?;
-            ClickTarget::Window { class, x, y }
+            let nth = match options.take("nth") {
+                Some(raw) => raw.parse().ok().filter(|n| *n >= 1).context("nth deve ser 1 ou mais")?,
+                None => 1,
+            };
+            ClickTarget::Window { class, nth, x, y }
         }
         None => {
             let (x, y) = parse_point(&options.positional("posição X,Y")?)?;
@@ -418,8 +428,12 @@ impl fmt::Display for Step {
                 write!(f, "click {}", button.name())?;
                 match target {
                     ClickTarget::Absolute { x, y } => write!(f, " {x},{y}"),
-                    ClickTarget::Window { class, x, y } => {
-                        write!(f, " window={} at={x},{y}", quote(class))
+                    ClickTarget::Window { class, nth, x, y } => {
+                        write!(f, " window={}", quote(class))?;
+                        if *nth > 1 {
+                            write!(f, " nth={nth}")?;
+                        }
+                        write!(f, " at={x},{y}")
                     }
                 }
             }
@@ -439,7 +453,7 @@ mod tests {
         sleep 500ms
         key SUPER+2
         type "olá \"mundo\" # não é comentário a=b"
-        click right window="org\.gnome\.Nautilus" at=120,40
+        click right window="org\.gnome\.Nautilus" nth=2 at=120,40
         click 10,20
         scroll -3
         launch kitty focus always
@@ -460,6 +474,7 @@ mod tests {
                 button: Button::Right,
                 target: ClickTarget::Window {
                     class: r"org\.gnome\.Nautilus".into(),
+                    nth: 2,
                     x: 120,
                     y: 40
                 }

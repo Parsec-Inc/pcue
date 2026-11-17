@@ -41,6 +41,8 @@ pub struct Client {
     pub visible: bool,
     #[serde(rename = "focusHistoryID", default)]
     pub focus_history_id: i32,
+    #[serde(rename = "stableId", default)]
+    pub stable_id: String,
 }
 
 /// Posição do cursor em `j/cursorpos`.
@@ -58,6 +60,11 @@ impl Client {
     /// O ponto global está dentro da janela?
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.at[0] && y >= self.at[1] && x < self.at[0] + self.size[0] && y < self.at[1] + self.size[1]
+    }
+
+    /// Ordem de abertura (o `stableId` cresce a cada janela nova).
+    pub fn opened_order(&self) -> u64 {
+        u64::from_str_radix(&self.stable_id, 16).unwrap_or(u64::MAX)
     }
 
     /// Janela visível na tela agora.
