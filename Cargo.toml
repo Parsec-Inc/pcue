@@ -2,7 +2,7 @@
 name = "pcue"
 version = "0.1.0"
 edition = "2024"
-description = "Abre apps no login do Hyprland, cada um no seu workspace"
+description = "Rotinas para o desktop Linux: abre apps nos workspaces, grava e reproduz ações, dispara por evento ou horário"
 
 [dependencies]
 anyhow = "1"
