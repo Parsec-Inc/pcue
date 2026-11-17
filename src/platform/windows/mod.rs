@@ -226,6 +226,21 @@ pub fn kill(pid: u32) -> Result<()> {
     win::terminate(pid)
 }
 
+/// Sufixo do binário desta plataforma nas releases.
+pub const ASSET_SUFFIX: &str = "windows-x86_64.exe";
+
+/// Troca o executável: o Windows deixa renomear o que está em uso, mas não sobrescrever.
+pub fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<()> {
+    let old = exe.with_extension("old.exe");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(exe, &old).context("não foi possível afastar o executável atual")?;
+    if let Err(err) = std::fs::write(exe, bytes) {
+        let _ = std::fs::rename(&old, exe);
+        return Err(err).context("não foi possível gravar o executável novo");
+    }
+    Ok(())
+}
+
 /// Processo filho sem janela de console.
 pub fn background(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);

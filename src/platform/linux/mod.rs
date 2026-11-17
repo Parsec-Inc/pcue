@@ -316,6 +316,18 @@ pub fn kill(pid: u32) -> Result<()> {
     Ok(())
 }
 
+/// Sufixo do binário desta plataforma nas releases.
+pub const ASSET_SUFFIX: &str = "linux-x86_64";
+
+/// Troca o executável pelo novo; o rename funciona com ele em execução.
+pub fn replace_exe(exe: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = exe.with_extension("new");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&tmp, exe).with_context(|| format!("falha ao substituir {}", exe.display()))
+}
+
 /// Processo filho sem terminal (no Linux não há janela a esconder).
 pub fn background(_command: &mut Command) {}
 

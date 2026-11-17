@@ -129,13 +129,19 @@ pcue record trabalho # grava pelo terminal e acrescenta à rotina
 pcue capture -w 2    # gera passos launch das janelas abertas no workspace 2
 pcue list            # lista as rotinas
 pcue paths           # mostra config, log e histórico
+pcue update --check  # mostra se há versão nova no GitHub
+pcue update          # baixa a última release, confere o SHA-256 e troca o binário
 ```
+
+A TUI procura versão nova ao abrir e avisa na barra de status; `U` pergunta
+antes de atualizar. Nada é instalado sem confirmação, e o daemon se reinicia
+sozinho quando o binário muda.
 
 ### Atalhos da TUI
 
 | Onde | Teclas |
 |---|---|
-| Geral | `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `?` ajuda · `q` sai |
+| Geral | `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
 | Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |

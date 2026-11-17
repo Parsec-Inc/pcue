@@ -21,6 +21,7 @@ use crate::schedule::parse_daily_input;
 use crate::script::{SYNTAX, is_comment, parse_line, parse_steps};
 use crate::utils::{expand_home, log_path, runtime_dir};
 use crate::platform::{self as install, Desktop};
+use crate::update::{self, Release, UpdateEvent};
 use crate::{boot, capture, daemon};
 
 /// Intervalo entre leituras de daemon, histórico e agenda.
@@ -126,6 +127,7 @@ pub enum ConfirmAction {
     DeleteStep(usize),
     DeleteTrigger(usize),
     MakeFree,
+    Update,
 }
 
 /// Mensagem na barra de status.
@@ -197,6 +199,9 @@ pub struct App {
     pub installed: bool,
     /// Gerenciador de janelas controlado (ex.: Hyprland).
     pub manager: Option<&'static str>,
+    /// Release mais nova que a atual, se houver.
+    pub update: Option<Release>,
+    updates: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     pub filter: Option<Filter>,
     pub recording: Option<Recording>,
     pub slides: Slides,
@@ -236,6 +241,8 @@ impl App {
             daemon_up: daemon::is_running(),
             installed: install::is_installed(),
             manager: install::manager_name(),
+            update: None,
+            updates: Some(update::check_in_background()),
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -311,6 +318,7 @@ impl App {
     /// Atualiza gravação, progresso, daemon e histórico.
     pub fn refresh(&mut self) {
         self.poll_recording();
+        self.poll_update();
         if self.last_progress.elapsed() >= PROGRESS_EVERY {
             self.last_progress = Instant::now();
             self.running = progress::running();
@@ -434,6 +442,7 @@ impl App {
             KeyCode::Char('L') => self.open_log(),
             KeyCode::Char('H') => self.open_history(None),
             KeyCode::Char('I') => self.toggle_install(),
+            KeyCode::Char('U') => self.ask_update(),
             KeyCode::Tab | KeyCode::Right => self.cycle_focus(true),
             KeyCode::BackTab | KeyCode::Left => self.cycle_focus(false),
             KeyCode::Esc if self.focus == Pane::Routines && self.filter.is_some() => {
@@ -1065,8 +1074,43 @@ impl App {
             ConfirmAction::MakeFree => self.mutate_routine(|r| {
                 r.triggers.clear();
             }),
+            ConfirmAction::Update => {
+                if let Some(release) = self.update.clone() {
+                    self.info(format!("baixando pcue {}...", release.version));
+                    self.updates = Some(update::install_in_background(release));
+                }
+                return;
+            }
         };
         self.report(result);
+    }
+
+    /// Pergunta antes de instalar a versão nova.
+    fn ask_update(&mut self) {
+        match &self.update {
+            Some(release) => {
+                let prompt = format!("Atualizar de {} para {}?", env!("CARGO_PKG_VERSION"), release.version);
+                self.confirm(prompt, ConfirmAction::Update);
+            }
+            None => self.info("nenhuma versão nova encontrada"),
+        }
+    }
+
+    /// Recebe o resultado da busca ou da instalação de versão nova.
+    fn poll_update(&mut self) {
+        let Some(event) = self.updates.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.updates = None;
+        match event {
+            UpdateEvent::Available(release) => {
+                self.info(format!("versão {} disponível (U atualiza)", release.version));
+                self.update = Some(release);
+            }
+            UpdateEvent::Installed(version) => {
+                self.update = None;
+                self.info(format!("atualizado para {version}; reabra o pcue"));
+            }
+            UpdateEvent::Failed(err) => self.error(format!("atualização falhou: {err}")),
+        }
     }
 
     fn toggle_enabled(&mut self) {

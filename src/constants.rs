@@ -87,6 +87,11 @@ pub const CAUSE_GAP: Duration = Duration::from_millis(1500);
 pub const FOCUS_ATTRIBUTION: Duration = Duration::from_millis(1500);
 /// Gravação: foco na janela recém-aberta até este tempo vira `launch ... focus`.
 pub const FOCUS_FOLLOW: Duration = Duration::from_millis(1500);
+/// Repositório com as releases do pcue.
+pub const UPDATE_REPO: &str = "Parsec-Inc/pcue";
+/// Arquivo de somas SHA-256 publicado em cada release.
+pub const UPDATE_CHECKSUMS: &str = "SHA256SUMS";
+
 /// Prefixo das mudanças do desktop na lista da gravação.
 pub const DESKTOP_MARK: &str = "◆";
 /// Editor quando `$VISUAL`/`$EDITOR` não estão definidos.

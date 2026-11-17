@@ -15,6 +15,7 @@ mod runner;
 mod schedule;
 mod script;
 mod tui;
+mod update;
 mod utils;
 
 use std::time::Duration;
@@ -82,6 +83,12 @@ enum Command {
     Uninstall,
     /// Mostra os caminhos de config, log e histórico
     Paths,
+    /// Atualiza para a última release do GitHub
+    Update {
+        /// Só mostra se há versão nova
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -153,6 +160,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Update { check } => update::run(check),
         Command::Paths => {
             println!("config:    {}", path.display());
             println!("log:       {}", log_path()?.display());

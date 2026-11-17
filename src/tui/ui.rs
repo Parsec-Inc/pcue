@@ -531,6 +531,9 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             ("E", "editor", c('E')),
         ],
     };
+    if app.update.is_some() {
+        list.push(("U", "atualizar", c('U')));
+    }
     list.extend([
         ("H", "histórico", c('H')),
         ("L", "log", c('L')),
@@ -1034,5 +1037,5 @@ const HELP_GENERAL: &[&str] = &[
     "",
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
-    "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · q sai",
+    "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];
