@@ -141,14 +141,16 @@ fn download(url: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// Release falsa servida por `file://`; o wine não traz curl, então só no Unix.
-    #[cfg(unix)]
+    /// Release falsa servida por `file://`.
     fn fake_release(dir: &std::path::Path, sums_ok: bool) -> Release {
         let name = format!("pcue-9.9.9-{}", platform::ASSET_SUFFIX);
         std::fs::write(dir.join(&name), b"novo").unwrap();
         let sum = sha256_hex(if sums_ok { b"novo" } else { b"outro" });
         std::fs::write(dir.join(UPDATE_CHECKSUMS), format!("{sum}  {name}\n")).unwrap();
-        let url = |file: &str| format!("file://{}", dir.join(file).display());
+        let url = |file: &str| {
+            let path = dir.join(file).display().to_string().replace('\\', "/");
+            format!("file://{}{path}", if path.starts_with('/') { "" } else { "/" })
+        };
         Release {
             version: "9.9.9".into(),
             assets: [name.as_str(), UPDATE_CHECKSUMS]
@@ -157,7 +159,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn install_checks_sum_and_replaces() {
         let dir = std::env::temp_dir().join(format!("pcue-update-{}", std::process::id()));

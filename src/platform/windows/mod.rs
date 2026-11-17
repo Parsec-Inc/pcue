@@ -317,3 +317,75 @@ pub fn private_file(path: &Path) -> Result<std::fs::File> {
 
 /// Sem notificações no Windows por enquanto; a falha fica no log e no histórico.
 pub fn notify(_summary: &str, _body: &str) {}
+
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::Foundation::HWND;
+
+    use super::*;
+
+    /// Pasta temporária apagada no fim do teste.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("pcue-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn replace_exe_swaps_a_running_program() {
+        let dir = Scratch::new("running");
+        let exe = dir.0.join("pcue.exe");
+        let ping = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\PING.EXE");
+        std::fs::copy(ping, &exe).unwrap();
+        let mut child = Command::new(&exe).args(["-n", "30", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+        assert!(std::fs::write(&exe, b"x").is_err(), "o Windows não sobrescreve um exe em uso");
+        let result = replace_exe(&exe, b"novo");
+        let _ = child.kill();
+        let _ = child.wait();
+        result.unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"novo");
+        assert!(dir.0.join("pcue.old.exe").exists());
+    }
+
+    #[test]
+    fn this_process_is_alive_and_has_a_path() {
+        let pid = std::process::id();
+        assert!(process_alive(pid));
+        let path = win::process_path(pid).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert!(path.ends_with(&*exe.file_name().unwrap().to_string_lossy()), "{path}");
+        assert!(!process_alive(u32::MAX - 1));
+    }
+
+    #[test]
+    fn window_ids_round_trip() {
+        let hwnd = 0x1a2b3c as HWND;
+        assert_eq!(win::parse_id(&win::window_id(hwnd)).unwrap(), hwnd);
+        assert!(win::parse_id("janela").is_err());
+    }
+
+    #[test]
+    fn workspace_is_a_monitor_number() {
+        assert_eq!(monitor_index(&Workspace("2".into()), 2).unwrap(), 1);
+        assert!(monitor_index(&Workspace("3".into()), 2).is_err());
+        assert!(monitor_index(&Workspace("0".into()), 2).is_err());
+        assert!(monitor_index(&Workspace("web".into()), 2).is_err());
+    }
+
+    #[test]
+    fn folders_and_pipe_come_from_the_environment() {
+        assert!(config_dir().unwrap().ends_with(APP_NAME));
+        assert!(runtime_dir().unwrap().starts_with(state_dir().unwrap()));
+        daemon_endpoint().unwrap();
+    }
+}
