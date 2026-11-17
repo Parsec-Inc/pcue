@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::constants::CLICK_MOVE_SETTLE;
 use crate::hypr::Hypr;
 use crate::input::VirtualInput;
-use crate::launcher::{LaunchSpec, class_regex, launch, nth_window, wait_any_window, windows_of};
+use crate::launcher::{LaunchSpec, class_regex, launch, nth_window, windows_of};
 use crate::progress::{self, Progress};
 use crate::script::{ClickTarget, Guard, Line, MAX_CALL_DEPTH, Step, parse_steps};
 use crate::utils::log;
@@ -113,8 +113,8 @@ impl<'a> Player<'a> {
                 };
                 launch(hypr, &spec, timeout)
             }
-            Step::WaitWindow { class, timeout } => match hypr {
-                Some(hypr) => wait_any_window(hypr, class, *timeout).map(|_| ()),
+            Step::WaitWindow { class, nth, timeout } => match hypr {
+                Some(hypr) => nth_window(hypr, class, *nth, *timeout).map(|_| ()),
                 None => {
                     log("sem Hyprland: wait_window vira espera fixa do timeout");
                     std::thread::sleep(*timeout);

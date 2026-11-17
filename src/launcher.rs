@@ -53,13 +53,6 @@ pub fn launch(hypr: Option<&Hypr>, spec: &LaunchSpec, timeout: Duration) -> Resu
     Ok(())
 }
 
-/// Espera até existir uma janela com a class, nova ou não.
-pub fn wait_any_window(hypr: &Hypr, class: &str, timeout: Duration) -> Result<Client> {
-    let re = class_regex(class)?;
-    wait_new_window(hypr, &re, &HashSet::new(), timeout)?
-        .with_context(|| format!("nenhuma janela {class} em {}s", timeout.as_secs()))
-}
-
 /// Janelas da class em ordem de abertura.
 pub fn windows_of(clients: Vec<Client>, re: &Regex) -> Vec<Client> {
     let mut windows: Vec<Client> = clients.into_iter().filter(|c| matches_class(re, c)).collect();

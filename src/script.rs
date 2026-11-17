@@ -11,7 +11,7 @@ use crate::keys::{combo_name, parse_combo};
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
 pub const SYNTAX: &[&str] = &[
     "launch \"cmd\" [workspace=N] [class=REGEX] [focus] [always]",
-    "wait_window class=REGEX [timeout=30s]      sleep 500ms | 2s | 1m | 1h",
+    "wait_window class=REGEX [nth=N] [timeout=30s]    sleep 500ms | 2s | 1m | 1h",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
     "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
     "call outra_rotina      # comentário",
@@ -33,6 +33,8 @@ pub enum Step {
     },
     WaitWindow {
         class: String,
+        /// Quantas janelas da class precisam existir.
+        nth: usize,
         timeout: Duration,
     },
     Sleep(Duration),
@@ -147,6 +149,7 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
         },
         "wait_window" => Step::WaitWindow {
             class: options.required("class")?,
+            nth: parse_nth(&mut options)?,
             timeout: options
                 .take("timeout")
                 .map(|v| parse_duration(&v))
@@ -174,6 +177,14 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
     Ok(Instruction { step, guard })
 }
 
+/// Opção `nth` (1 = mais antiga), padrão 1.
+fn parse_nth(options: &mut Options) -> Result<usize> {
+    match options.take("nth") {
+        Some(raw) => raw.parse().ok().filter(|n| *n >= 1).context("nth deve ser 1 ou mais"),
+        None => Ok(1),
+    }
+}
+
 /// `click [left|right|middle] X,Y` ou `click [botão] window=CLASS [nth=N] at=X,Y`.
 fn parse_click(options: &mut Options) -> Result<Step> {
     let mut button = Button::Left;
@@ -185,10 +196,7 @@ fn parse_click(options: &mut Options) -> Result<Step> {
     let target = match options.take("window") {
         Some(class) => {
             let (x, y) = parse_point(&options.required("at")?)?;
-            let nth = match options.take("nth") {
-                Some(raw) => raw.parse().ok().filter(|n| *n >= 1).context("nth deve ser 1 ou mais")?,
-                None => 1,
-            };
+            let nth = parse_nth(options)?;
             ClickTarget::Window { class, nth, x, y }
         }
         None => {
@@ -454,8 +462,11 @@ impl fmt::Display for Step {
                 }
                 Ok(())
             }
-            Step::WaitWindow { class, timeout } => {
+            Step::WaitWindow { class, nth, timeout } => {
                 write!(f, "wait_window class={}", quote(class))?;
+                if *nth > 1 {
+                    write!(f, " nth={nth}")?;
+                }
                 if *timeout != DEFAULT_WAIT_TIMEOUT {
                     write!(f, " timeout={}", format_duration(*timeout))?;
                 }
@@ -515,6 +526,7 @@ mod tests {
         # abre o navegador no 2
         launch "firefox --new-window" workspace=2 class=firefox
         wait_window class=firefox timeout=20s
+        wait_window class=kitty nth=2
         sleep 500ms
         key SUPER+2
         type "olá \"mundo\" # não é comentário a=b"
@@ -527,14 +539,15 @@ mod tests {
     #[test]
     fn parses_every_step_kind() {
         let lines = parse(SAMPLE).unwrap();
-        assert_eq!(lines.len(), 9);
+        assert_eq!(lines.len(), 10);
         assert_eq!(lines[0].number, 3);
+        assert!(matches!(&lines[2].step, Step::WaitWindow { nth: 2, .. }));
         assert_eq!(
-            lines[4].step,
+            lines[5].step,
             Step::Type("olá \"mundo\" # não é comentário a=b".into())
         );
         assert_eq!(
-            lines[5].step,
+            lines[6].step,
             Step::Click {
                 button: Button::Right,
                 target: ClickTarget::Window {
@@ -545,7 +558,7 @@ mod tests {
                 }
             }
         );
-        assert!(matches!(lines[8].step, Step::Launch { focus: true, always: true, .. }));
+        assert!(matches!(lines[9].step, Step::Launch { focus: true, always: true, .. }));
     }
 
     #[test]

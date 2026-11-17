@@ -273,6 +273,7 @@ impl<'a> Recorder<'a> {
                 if self.waited.insert(class.clone()) {
                     let wait = Step::WaitWindow {
                         class: class.clone(),
+                        nth: 1,
                         timeout: DEFAULT_WAIT_TIMEOUT,
                     };
                     self.push(time, wait.to_string());
