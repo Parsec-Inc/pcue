@@ -12,6 +12,7 @@ use crate::keys::{combo_name, parse_combo};
 pub const SYNTAX: &[&str] = &[
     "launch \"cmd\" [workspace=N] [class=REGEX] [focus] [always]",
     "wait_layer namespace=REGEX [timeout=30s]   (barra/painel do shell, ex. quickshell:bar)",
+    "workspace 3   vai para o workspace exato (SUPER+N pode ser relativo ao monitor)",
     "wait_monitors [timeout=30s]   espera os monitores das regras de workspace e reposiciona os workspaces",
     "wait_window class=REGEX [nth=N] [timeout=30s]    sleep 500ms | 2s | 1m | 1h",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
@@ -44,6 +45,7 @@ pub enum Step {
         timeout: Duration,
     },
     WaitMonitors(Duration),
+    Workspace(Workspace),
     Sleep(Duration),
     Key(Vec<Key>),
     Type(String),
@@ -163,6 +165,7 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
             namespace: options.required("namespace")?,
             timeout: parse_timeout(&mut options)?,
         },
+        "workspace" => Step::Workspace(Workspace(options.positional("workspace")?)),
         "wait_monitors" => Step::WaitMonitors(parse_timeout(&mut options)?),
         "sleep" => Step::Sleep(parse_duration(&options.positional("duração")?)?),
         "key" => Step::Key(parse_combo(&options.positional("atalho")?)?),
@@ -496,6 +499,7 @@ impl fmt::Display for Step {
                 }
                 Ok(())
             }
+            Step::Workspace(workspace) => write!(f, "workspace {}", quote(&workspace.0)),
             Step::WaitMonitors(timeout) => {
                 f.write_str("wait_monitors")?;
                 if *timeout != DEFAULT_WAIT_TIMEOUT {
@@ -560,6 +564,7 @@ mod tests {
         wait_window class=kitty nth=2
         wait_layer namespace=quickshell:bar timeout=2m
         wait_monitors timeout=1m
+        workspace 3
         sleep 500ms
         key SUPER+2
         type "olá \"mundo\" # não é comentário a=b"
@@ -572,15 +577,15 @@ mod tests {
     #[test]
     fn parses_every_step_kind() {
         let lines = parse(SAMPLE).unwrap();
-        assert_eq!(lines.len(), 12);
+        assert_eq!(lines.len(), 13);
         assert_eq!(lines[0].number, 3);
         assert!(matches!(&lines[2].step, Step::WaitWindow { nth: 2, .. }));
         assert_eq!(
-            lines[7].step,
+            lines[8].step,
             Step::Type("olá \"mundo\" # não é comentário a=b".into())
         );
         assert_eq!(
-            lines[8].step,
+            lines[9].step,
             Step::Click {
                 button: Button::Right,
                 target: ClickTarget::Window {
@@ -591,7 +596,7 @@ mod tests {
                 }
             }
         );
-        assert!(matches!(lines[11].step, Step::Launch { focus: true, always: true, .. }));
+        assert!(matches!(lines[12].step, Step::Launch { focus: true, always: true, .. }));
     }
 
     #[test]

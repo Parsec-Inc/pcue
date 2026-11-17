@@ -124,6 +124,9 @@ impl<'a> Player<'a> {
             Step::WaitLayer { namespace, timeout } => {
                 wait_layer(hypr.context("wait_layer precisa do Hyprland")?, namespace, *timeout)
             }
+            Step::Workspace(workspace) => hypr
+                .context("workspace precisa do Hyprland")?
+                .focus_workspace(&workspace.0),
             Step::WaitMonitors(timeout) => {
                 wait_monitors(hypr.context("wait_monitors precisa do Hyprland")?, *timeout)
             }

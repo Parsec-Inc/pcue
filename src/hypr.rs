@@ -241,6 +241,15 @@ impl Hypr {
         Ok(rules.into_iter().filter(|r| r.monitor.is_some()).collect())
     }
 
+    /// Vai para o workspace exato, sem depender dos atalhos.
+    pub fn focus_workspace(&self, workspace: &str) -> Result<()> {
+        let dispatch = match self.dialect {
+            Dialect::Lua => format!("hl.dsp.focus({{ workspace = {} }})", lua_str(workspace)),
+            Dialect::Legacy => format!("workspace {workspace}"),
+        };
+        self.dispatch(&dispatch)
+    }
+
     /// Leva o workspace para o monitor.
     pub fn move_workspace(&self, workspace: &str, monitor: &str) -> Result<()> {
         let dispatch = match self.dialect {

@@ -459,6 +459,7 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
     let color = match verb {
         "launch" => OK,
         "wait_window" | "wait_layer" | "wait_monitors" | "sleep" => WARN,
+        "workspace" => OK,
         "key" | "type" => Color::Magenta,
         "click" | "scroll" => Color::Blue,
         "call" => ACCENT,
