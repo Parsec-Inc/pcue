@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::constants::CLICK_MOVE_SETTLE;
 use crate::hypr::Hypr;
 use crate::input::VirtualInput;
-use crate::launcher::{LaunchSpec, class_regex, launch, nth_window, windows_of};
+use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, wait_layer, windows_of};
 use crate::progress::{self, Progress};
 use crate::script::{ClickTarget, Guard, Line, MAX_CALL_DEPTH, Step, parse_steps};
 use crate::utils::log;
@@ -91,7 +91,7 @@ impl<'a> Player<'a> {
 
     fn window_exists(&self, class: &str) -> Result<bool> {
         let hypr = self.hypr.context("if_window/unless_window precisam do Hyprland")?;
-        Ok(!windows_of(hypr.clients()?, &class_regex(class)?).is_empty())
+        Ok(!windows_of(hypr.clients()?, &anchored_regex(class)?).is_empty())
     }
 
     fn run_step(&mut self, step: &Step) -> Result<()> {
@@ -121,6 +121,9 @@ impl<'a> Player<'a> {
                     Ok(())
                 }
             },
+            Step::WaitLayer { namespace, timeout } => {
+                wait_layer(hypr.context("wait_layer precisa do Hyprland")?, namespace, *timeout)
+            }
             Step::Sleep(duration) => {
                 std::thread::sleep(*duration);
                 Ok(())

@@ -21,7 +21,7 @@ pub struct LaunchSpec<'a> {
 
 /// Abre o app e, havendo class, espera a janela e corrige o workspace.
 pub fn launch(hypr: Option<&Hypr>, spec: &LaunchSpec, timeout: Duration) -> Result<()> {
-    let class = spec.class.map(class_regex).transpose()?;
+    let class = spec.class.map(anchored_regex).transpose()?;
     let Some(hypr) = hypr else {
         if spec.workspace.is_some() {
             log("sem Hyprland: workspace ignorado, abrindo no atual");
@@ -53,6 +53,19 @@ pub fn launch(hypr: Option<&Hypr>, spec: &LaunchSpec, timeout: Duration) -> Resu
     Ok(())
 }
 
+/// Espera existir uma superfície de shell com o namespace.
+pub fn wait_layer(hypr: &Hypr, namespace: &str, timeout: Duration) -> Result<()> {
+    let re = anchored_regex(namespace)?;
+    let deadline = Instant::now() + timeout;
+    while !hypr.layers()?.iter().any(|layer| re.is_match(layer)) {
+        if Instant::now() >= deadline {
+            bail!("nenhuma camada {namespace} após {}s", timeout.as_secs());
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    Ok(())
+}
+
 /// Janelas da class em ordem de abertura.
 pub fn windows_of(clients: Vec<Client>, re: &Regex) -> Vec<Client> {
     let mut windows: Vec<Client> = clients.into_iter().filter(|c| matches_class(re, c)).collect();
@@ -62,7 +75,7 @@ pub fn windows_of(clients: Vec<Client>, re: &Regex) -> Vec<Client> {
 
 /// A n-ésima janela da class (1 = a mais antiga), esperando ela existir.
 pub fn nth_window(hypr: &Hypr, class: &str, nth: usize, timeout: Duration) -> Result<Client> {
-    let re = class_regex(class)?;
+    let re = anchored_regex(class)?;
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(window) = windows_of(hypr.clients()?, &re).into_iter().nth(nth - 1) {
@@ -113,7 +126,7 @@ fn spawn_detached(command: &str) -> Result<()> {
 }
 
 /// Regex da class, case-insensitive e casando a string inteira.
-pub fn class_regex(pattern: &str) -> Result<Regex> {
+pub fn anchored_regex(pattern: &str) -> Result<Regex> {
     RegexBuilder::new(&format!("^(?:{pattern})$"))
         .case_insensitive(true)
         .build()

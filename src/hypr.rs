@@ -125,6 +125,25 @@ impl Hypr {
     }
 
     /// A sessão está bloqueada (qualquer tela de bloqueio ext-session-lock)?
+    /// Namespaces das superfícies de shell (barras, painéis, fundo).
+    pub fn layers(&self) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct Monitor {
+            levels: std::collections::HashMap<String, Vec<Layer>>,
+        }
+        #[derive(Deserialize)]
+        struct Layer {
+            namespace: String,
+        }
+        let monitors: std::collections::HashMap<String, Monitor> =
+            serde_json::from_str(&self.request("j/layers")?).context("resposta inesperada de j/layers")?;
+        Ok(monitors
+            .into_values()
+            .flat_map(|m| m.levels.into_values().flatten())
+            .map(|layer| layer.namespace)
+            .collect())
+    }
+
     pub fn is_locked(&self) -> Result<bool> {
         #[derive(Deserialize)]
         struct Locked {

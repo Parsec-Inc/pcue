@@ -11,6 +11,7 @@ use crate::keys::{combo_name, parse_combo};
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
 pub const SYNTAX: &[&str] = &[
     "launch \"cmd\" [workspace=N] [class=REGEX] [focus] [always]",
+    "wait_layer namespace=REGEX [timeout=30s]   (barra/painel do shell, ex. quickshell:bar)",
     "wait_window class=REGEX [nth=N] [timeout=30s]    sleep 500ms | 2s | 1m | 1h",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
     "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
@@ -35,6 +36,10 @@ pub enum Step {
         class: String,
         /// Quantas janelas da class precisam existir.
         nth: usize,
+        timeout: Duration,
+    },
+    WaitLayer {
+        namespace: String,
         timeout: Duration,
     },
     Sleep(Duration),
@@ -150,11 +155,11 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
         "wait_window" => Step::WaitWindow {
             class: options.required("class")?,
             nth: parse_nth(&mut options)?,
-            timeout: options
-                .take("timeout")
-                .map(|v| parse_duration(&v))
-                .transpose()?
-                .unwrap_or(DEFAULT_WAIT_TIMEOUT),
+            timeout: parse_timeout(&mut options)?,
+        },
+        "wait_layer" => Step::WaitLayer {
+            namespace: options.required("namespace")?,
+            timeout: parse_timeout(&mut options)?,
         },
         "sleep" => Step::Sleep(parse_duration(&options.positional("duração")?)?),
         "key" => Step::Key(parse_combo(&options.positional("atalho")?)?),
@@ -175,6 +180,15 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
     };
     options.finish()?;
     Ok(Instruction { step, guard })
+}
+
+/// Opção `timeout`, com o padrão das esperas.
+fn parse_timeout(options: &mut Options) -> Result<Duration> {
+    Ok(options
+        .take("timeout")
+        .map(|v| parse_duration(&v))
+        .transpose()?
+        .unwrap_or(DEFAULT_WAIT_TIMEOUT))
 }
 
 /// Opção `nth` (1 = mais antiga), padrão 1.
@@ -472,6 +486,13 @@ impl fmt::Display for Step {
                 }
                 Ok(())
             }
+            Step::WaitLayer { namespace, timeout } => {
+                write!(f, "wait_layer namespace={}", quote(namespace))?;
+                if *timeout != DEFAULT_WAIT_TIMEOUT {
+                    write!(f, " timeout={}", format_duration(*timeout))?;
+                }
+                Ok(())
+            }
             Step::Sleep(duration) => write!(f, "sleep {}", format_duration(*duration)),
             Step::Key(keys) => write!(f, "key {}", combo_name(keys)),
             Step::Type(text) => write!(f, "type {}", quote(text)),
@@ -527,6 +548,7 @@ mod tests {
         launch "firefox --new-window" workspace=2 class=firefox
         wait_window class=firefox timeout=20s
         wait_window class=kitty nth=2
+        wait_layer namespace=quickshell:bar timeout=2m
         sleep 500ms
         key SUPER+2
         type "olá \"mundo\" # não é comentário a=b"
@@ -539,15 +561,15 @@ mod tests {
     #[test]
     fn parses_every_step_kind() {
         let lines = parse(SAMPLE).unwrap();
-        assert_eq!(lines.len(), 10);
+        assert_eq!(lines.len(), 11);
         assert_eq!(lines[0].number, 3);
         assert!(matches!(&lines[2].step, Step::WaitWindow { nth: 2, .. }));
         assert_eq!(
-            lines[5].step,
+            lines[6].step,
             Step::Type("olá \"mundo\" # não é comentário a=b".into())
         );
         assert_eq!(
-            lines[6].step,
+            lines[7].step,
             Step::Click {
                 button: Button::Right,
                 target: ClickTarget::Window {
@@ -558,7 +580,7 @@ mod tests {
                 }
             }
         );
-        assert!(matches!(lines[9].step, Step::Launch { focus: true, always: true, .. }));
+        assert!(matches!(lines[10].step, Step::Launch { focus: true, always: true, .. }));
     }
 
     #[test]

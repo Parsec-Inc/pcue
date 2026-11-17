@@ -10,7 +10,7 @@ use crate::constants::{
     DEFAULT_WAIT_TIMEOUT, IGNORED_DEVICE_PREFIXES, RECORD_COUNTDOWN_SECS, RECORD_MIN_SLEEP, RECORD_SLEEP_ROUNDING_MS,
 };
 use crate::hypr::Hypr;
-use crate::launcher::{class_regex, windows_of};
+use crate::launcher::{anchored_regex, windows_of};
 use crate::keys::{MODIFIERS, combo_name, is_modifier, is_shift, key_to_char};
 use crate::script::{Button, ClickTarget, Step};
 
@@ -261,7 +261,7 @@ impl<'a> Recorder<'a> {
         let target = match hypr.window_at(x, y).ok().flatten() {
             Some(window) => {
                 let class = literal_class(&window.class);
-                let nth = class_regex(&class)
+                let nth = anchored_regex(&class)
                     .ok()
                     .zip(hypr.clients().ok())
                     .and_then(|(re, clients)| {
