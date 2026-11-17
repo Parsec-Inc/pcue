@@ -120,7 +120,10 @@ Cada rotina é uma lista de passos, um por linha:
 
 ```text
 launch "firefox --new-window" workspace=2 class=firefox [focus] [always]
-wait_window class=REGEX [timeout=30s]
+wait_window class=REGEX [nth=N] [timeout=30s]
+wait_layer namespace=REGEX [timeout=30s]
+wait_monitors [timeout=30s]
+workspace N
 sleep 500ms
 key SUPER+2
 type "texto"
@@ -139,6 +142,21 @@ Qualquer passo aceita modificadores:
 | `repeat=N` | executa o passo N vezes |
 | `if_window=REGEX` | só executa se existir janela com essa class |
 | `unless_window=REGEX` | só executa se **não** existir janela com essa class |
+
+### Rotinas de boot
+
+Ao adicionar o gatilho `login`, o pcue põe no início da rotina os passos que
+esperam o desktop ficar pronto, conforme o que detecta na hora:
+
+```text
+# pcue: espera o desktop carregar (boot)
+wait_layer namespace=quickshell:bar timeout=3m   # se houver barra conhecida (Quickshell, Waybar)
+wait_monitors timeout=3m                          # Hyprland: monitores das workspace rules + workspaces no lugar
+sleep 1500ms
+```
+
+O comentário marca o prefixo, então ele não é repetido. Pode editar ou apagar
+os passos à vontade.
 
 `click window=... nth=2` mira a segunda janela da class na ordem em que foram
 abertas, então dá para gravar cliques em duas instâncias do mesmo app.

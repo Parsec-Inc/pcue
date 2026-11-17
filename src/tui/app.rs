@@ -13,7 +13,8 @@ use ratatui::layout::{Position, Rect};
 use super::anim::Slide;
 use super::text_input::TextInput;
 use crate::config::{Config, Routine, Trigger, validate_name};
-use crate::constants::{BUILTIN_EVENTS, TUI_RUN_DELAY_MS};
+use crate::constants::{BOOT_EVENT, BUILTIN_EVENTS, TUI_RUN_DELAY_MS};
+use crate::hypr::Hypr;
 use crate::history::{self, Run};
 use crate::progress::{self, Progress};
 use crate::recorder::{self, RecordEvent};
@@ -21,7 +22,7 @@ use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
 use crate::script::{SYNTAX, is_comment, parse_line, parse_steps};
 use crate::utils::{expand_home, log_path, runtime_dir};
-use crate::{capture, daemon, install};
+use crate::{boot, capture, daemon, install};
 
 /// Intervalo entre leituras de daemon, histórico e agenda.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
@@ -959,9 +960,17 @@ impl App {
     /// Adiciona ou troca um gatilho; com gatilho a rotina é agendada.
     fn save_trigger(&mut self, editing: Option<usize>, trigger: Trigger) -> Result<()> {
         trigger.validate()?;
-        self.mutate_routine(|r| match editing {
-            Some(index) => r.triggers[index] = trigger,
-            None => r.triggers.push(trigger),
+        let boot = matches!(&trigger, Trigger::Event { event } if event == BOOT_EVENT);
+        let hypr = boot.then(Hypr::detect).flatten();
+        let mut prefixed = false;
+        self.mutate_routine(|r| {
+            match editing {
+                Some(index) => r.triggers[index] = trigger,
+                None => r.triggers.push(trigger),
+            }
+            if boot {
+                prefixed = boot::ensure_prefix(&mut r.steps, hypr.as_ref());
+            }
         })?;
         self.focus = Pane::Triggers;
         if editing.is_none() {
@@ -969,6 +978,8 @@ impl App {
         }
         if !self.daemon_up {
             self.info("gatilho salvo; o daemon não está rodando (I registra no autostart)");
+        } else if prefixed {
+            self.info("adicionei no início os passos que esperam o desktop carregar no boot");
         }
         Ok(())
     }

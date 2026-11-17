@@ -1,3 +1,4 @@
+mod boot;
 mod capture;
 mod config;
 mod constants;

@@ -54,3 +54,14 @@ pub const PROGRESS_DIR: &str = "progress";
 pub const RUNNING_DIR: &str = "running";
 /// Próximos disparos publicados pelo daemon.
 pub const NEXT_RUNS_FILE: &str = "next.json";
+
+/// Evento que recebe o prefixo de espera do boot.
+pub const BOOT_EVENT: &str = "login";
+/// Primeira linha do prefixo de boot, usada para não repeti-lo.
+pub const BOOT_MARKER: &str = "# pcue: espera o desktop carregar (boot)";
+/// Quanto o prefixo de boot espera barra e monitores.
+pub const BOOT_WAIT_TIMEOUT: &str = "3m";
+/// Folga depois que o desktop terminou de carregar.
+pub const BOOT_SETTLE: &str = "1500ms";
+/// Barras conhecidas, na ordem de preferência.
+pub const KNOWN_BARS: &[&str] = &["quickshell:bar", "waybar"];

@@ -324,7 +324,7 @@ fn tokenize(line: &str) -> Result<Vec<Token>> {
 }
 
 /// Coloca aspas e escapes quando o valor não pode ir cru.
-fn quote(value: &str) -> String {
+pub fn quote(value: &str) -> String {
     let plain = !value.is_empty()
         && !KNOWN_FLAGS.contains(&value)
         && !value
