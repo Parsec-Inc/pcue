@@ -38,3 +38,17 @@ windows-sys = { version = "0.61", features = [
 [profile.release]
 strip = true
 lto = true
+
+# scripts/package.sh deb: empacota o binário musl já compilado.
+[package.metadata.deb]
+maintainer = "Parsec-Inc <noreply@github.com>"
+section = "utils"
+priority = "optional"
+extended-description = "Abre apps nos workspaces, grava e reproduz ações de teclado e mouse e dispara rotinas por evento ou horário. Inclui a regra de udev que dá ao usuário da sessão acesso ao teclado, mouse e uinput."
+maintainer-scripts = "packaging/linux/"
+assets = [
+    ["target/release/pcue", "usr/bin/", "755"],
+    ["packaging/linux/70-pcue.rules", "usr/lib/udev/rules.d/70-pcue.rules", "644"],
+    ["packaging/linux/modules-load.conf", "usr/lib/modules-load.d/pcue.conf", "644"],
+    ["README.md", "usr/share/doc/pcue/README.md", "644"],
+]

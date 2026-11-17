@@ -66,24 +66,43 @@ acompanhamento ao vivo das execuções.
 
 ## Instalação
 
-### Linux
+### Pacotes
+
+Cada release em [Releases](https://github.com/Parsec-Inc/pcue/releases) traz:
+
+| Sistema | Arquivo | Instalação |
+|---|---|---|
+| Fedora / openSUSE | `pcue-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./pcue-*.rpm` (ou pelo COPR, quando ligado) |
+| Debian / Ubuntu | `pcue_X.Y.Z_amd64.deb` | `sudo apt install ./pcue_*.deb` |
+| Arch | AUR `pcue-bin` | `yay -S pcue-bin` (quando ligado) |
+| Windows | `pcue-X.Y.Z-x86_64.msi` | duplo clique; instala só para o seu usuário, sem admin |
+| Qualquer Linux | `pcue-X.Y.Z-linux-x86_64` | binário estático; copie para o `PATH` |
+
+Os pacotes de Linux já instalam a regra de udev que dá ao usuário da sessão
+acesso ao teclado, mouse e `/dev/uinput` (sem grupo `input` nem logout) e
+carregam o módulo `uinput` no boot. Depois de instalar, rode `pcue install`
+(ou aperte `I` na TUI) para registrar o daemon no autostart.
+
+O `pcue update` funciona em qualquer forma de instalação: se o binário estiver
+numa pasta do sistema, ele pede a senha (pkexec no Linux, UAC no Windows).
+
+### Linux pelo código
 
 Requisitos:
 
 - Rust estável (edition 2024)
 - Hyprland 0.56+ para workspaces, janelas e cliques (sem Hyprland os apps abrem, mas sem posicionamento)
-- Seu usuário no grupo `input` para gravar (`/dev/input`) e reproduzir (`/dev/uinput`)
+- Acesso a `/dev/input` (gravar) e `/dev/uinput` (reproduzir)
 
 ```sh
 git clone https://github.com/Parsec-Inc/pcue.git
 cd pcue
 cargo install --path .
 
-# acesso a teclado/mouse (faça logout e login depois)
-sudo usermod -aG input "$USER"
-echo 'SUBSYSTEM=="misc", KERNEL=="uinput", MODE="0660", GROUP="input"' \
-  | sudo tee /etc/udev/rules.d/99-uinput.rules
-sudo udevadm control --reload && sudo udevadm trigger
+# acesso a teclado, mouse e uinput para o usuário da sessão (a mesma regra dos pacotes)
+sudo install -Dm644 packaging/linux/70-pcue.rules /etc/udev/rules.d/70-pcue.rules
+sudo install -Dm644 packaging/linux/modules-load.conf /etc/modules-load.d/pcue.conf
+sudo sh packaging/linux/postinst
 
 # registra o daemon no autostart da sessão (ou aperte I na TUI)
 pcue install
@@ -92,7 +111,7 @@ pcue install
 O daemon se reinicia sozinho quando o binário muda, então depois de um
 `cargo install --path .` não precisa fazer nada.
 
-### Windows
+### Windows pelo código
 
 Requisitos: Windows 10 ou 11 e Rust estável. Não precisa de permissão de
 administrador.
@@ -113,8 +132,8 @@ Diferenças no Windows:
 - `wait_layer` não existe; `wait_monitors` espera a barra de tarefas e a
   quantidade de monitores parar de mudar.
 - `type` digita em Unicode, então funciona com qualquer layout de teclado.
-- O Windows não deixa sobrescrever um `.exe` em uso: rode `pcue uninstall` e
-  encerre o daemon antes de atualizar, ou instale e reinicie a sessão.
+- O Windows não deixa sobrescrever um `.exe` em uso, mas deixa renomear: o
+  `pcue update` afasta o antigo (`pcue.old.exe`) e grava o novo no lugar.
 - Config em `%APPDATA%\pcue`, log e histórico em `%LOCALAPPDATA%\pcue`.
 
 ## Uso
@@ -316,6 +335,7 @@ cargo test
 cargo clippy
 cargo run            # TUI
 cargo run -- run nome --only 3
+scripts/package.sh binaries deb rpm   # binários, .deb e .rpm em dist/ (ver docs/PACKAGING.md)
 
 # Windows a partir do Linux (precisa do mingw-w64; testes rodam no wine)
 cargo check --target x86_64-pc-windows-gnu

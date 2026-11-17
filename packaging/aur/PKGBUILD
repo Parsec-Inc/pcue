@@ -1,0 +1,23 @@
+# AUR pcue-bin: o binário estático da release (scripts/package.sh aur troca @VERSION@).
+pkgname=pcue-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Rotinas para o desktop: abre apps, grava e reproduz ações"
+arch=('x86_64')
+url="https://github.com/Parsec-Inc/pcue"
+license=('LicenseRef-Proprietary')
+provides=('pcue')
+conflicts=('pcue')
+install=pcue.install
+source=("pcue-$pkgver::$url/releases/download/$pkgver/pcue-$pkgver-linux-x86_64"
+        "70-pcue.rules::$url/raw/$pkgver/packaging/linux/70-pcue.rules"
+        "modules-load.conf::$url/raw/$pkgver/packaging/linux/modules-load.conf"
+        "postinst::$url/raw/$pkgver/packaging/linux/postinst")
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+    install -Dm755 "pcue-$pkgver" "$pkgdir/usr/bin/pcue"
+    install -Dm644 70-pcue.rules "$pkgdir/usr/lib/udev/rules.d/70-pcue.rules"
+    install -Dm644 modules-load.conf "$pkgdir/usr/lib/modules-load.d/pcue.conf"
+    install -Dm755 postinst "$pkgdir/usr/share/pcue/postinst"
+}

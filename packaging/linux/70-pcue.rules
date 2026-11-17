@@ -1,0 +1,5 @@
+# pcue: acesso do usuário logado ao teclado e mouse (gravar) e ao uinput (reproduzir).
+# uaccess dá a permissão só a quem está na sessão ativa, sem precisar do grupo input.
+SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"

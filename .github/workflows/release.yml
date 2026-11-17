@@ -1,5 +1,8 @@
 name: Release
 
+# Push na main: testes, bump pelo commitizen, binários e pacotes de cada plataforma,
+# release no GitHub e, se ligados, AUR e COPR. Ver docs/PACKAGING.md.
+
 on:
   push:
     branches: [main]
@@ -23,12 +26,15 @@ jobs:
     if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     uses: ./.github/workflows/tests.yml
 
-  release:
+  bump:
     needs: tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: write
+    outputs:
+      released: ${{ steps.bump.outputs.released }}
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -61,37 +67,166 @@ jobs:
           echo "released=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Install toolchain
-        if: steps.bump.outputs.released == 'true'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q gcc-mingw-w64-x86-64 musl-tools
-          rustup show active-toolchain
-
-      - uses: Swatinem/rust-cache@v2
-        if: steps.bump.outputs.released == 'true'
-
-      - name: Build
-        if: steps.bump.outputs.released == 'true'
-        env:
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          cargo build --locked --release --target x86_64-unknown-linux-musl
-          cargo build --locked --release --target x86_64-pc-windows-gnu
-          mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/pcue "dist/pcue-$VERSION-linux-x86_64"
-          cp target/x86_64-pc-windows-gnu/release/pcue.exe "dist/pcue-$VERSION-windows-x86_64.exe"
-          (cd dist && sha256sum * > SHA256SUMS)
-
+      # A tag sobe antes dos builds para todos os jobs compilarem o mesmo commit.
       - name: Push version commit and tag
         if: steps.bump.outputs.released == 'true'
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: git push --atomic origin HEAD:main "$VERSION"
 
-      - name: GitHub release
+      - uses: actions/upload-artifact@v7
         if: steps.bump.outputs.released == 'true'
+        with:
+          name: notes
+          path: release-notes.md
+
+  linux:
+    needs: bump
+    if: needs.bump.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.bump.outputs.version }}
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-mingw-w64-x86-64 musl-tools rpm
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      # binários (o atualizador baixa estes), .deb, .rpm, .src.rpm do COPR e PKGBUILD do AUR
+      - name: Package
+        run: ./scripts/package.sh binaries deb rpm aur
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: |
+            dist/pcue-*
+            dist/*.deb
+            !dist/*.src.rpm
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: aur
+          path: dist/aur/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: srpm
+          path: dist/*.src.rpm
+
+  msi:
+    needs: [bump, linux]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.bump.outputs.version }}
+          persist-credentials: false
+
+      # o MSI empacota o mesmo .exe da release, compilado no job linux
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux
+          path: dist
+
+      - name: WiX 3
+        run: |
+          [ -d "/c/Program Files (x86)/WiX Toolset v3.14/bin" ] || choco install wixtoolset --no-progress -y
+          echo 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
+
+      - name: Package
+        run: ./scripts/package.sh msi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: msi
+          path: dist/*.msi
+
+  release:
+    needs: [bump, linux, msi]
+    # publica o que saiu mesmo se o MSI falhar; o linux (binários do atualizador) é obrigatório
+    if: ${{ !cancelled() && needs.linux.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.bump.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '{linux,msi,notes}'
+          path: dist
+          merge-multiple: true
+
+      - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: gh release create "$VERSION" dist/* --title "$VERSION" --notes-file release-notes.md
+        run: |
+          mv dist/release-notes.md .
+          (cd dist && sha256sum * > SHA256SUMS)
+          gh release create "$VERSION" dist/* -R "$GITHUB_REPOSITORY" --title "$VERSION" --notes-file release-notes.md
+
+  aur:
+    needs: [bump, release]
+    if: ${{ vars.PUBLISH_AUR == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: aur
+          path: aur
+
+      - uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        with:
+          pkgname: pcue-bin
+          pkgbuild: ./aur/PKGBUILD
+          assets: ./aur/pcue.install
+          updpkgsums: true
+          commit_username: github-actions[bot]
+          commit_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit_message: ${{ needs.bump.outputs.version }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+  copr:
+    needs: [bump, release]
+    if: ${{ vars.PUBLISH_COPR == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: srpm
+          path: dist
+
+      - uses: astral-sh/setup-uv@v10.3.2
+
+      # COPR_CONFIG: conteúdo de ~/.config/copr (copr.fedorainfracloud.org/api)
+      - name: Build no COPR
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+          COPR_PROJECT: ${{ vars.COPR_PROJECT }}
+        run: |
+          mkdir -p ~/.config
+          (umask 077 && printf '%s\n' "$COPR_CONFIG" > ~/.config/copr)
+          uvx copr-cli build "$COPR_PROJECT" dist/*.src.rpm

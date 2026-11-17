@@ -1,0 +1,8 @@
+#!/bin/sh
+# Aplica a regra de acesso do pcue sem reiniciar (deb, rpm e AUR usam este script).
+modprobe uinput 2>/dev/null || true
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=input --subsystem-match=misc 2>/dev/null || true
+fi
+exit 0
