@@ -1,41 +1,44 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::{Listener, ListenerOptions, Stream};
 use jiff::Zoned;
 
 use crate::config::{Config, Trigger, validate_name};
-use crate::constants::{DAEMON_TICK, EVENT_DEDUP_WINDOW, NEXT_RUNS_FILE};
+use crate::constants::{DAEMON_HANDOFF, DAEMON_TICK, EVENT_DEDUP_WINDOW, NEXT_RUNS_FILE};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::{Weekday, next_daily};
 use crate::script::parse_duration;
-use crate::utils::{config_path, daemon_socket, log, read_json, runtime_dir, write_atomic};
+use crate::platform::{self, daemon_endpoint};
+use crate::utils::{config_path, log, read_json, runtime_dir, write_atomic};
 
 /// Processo de fundo: dispara rotinas por evento e horário.
 pub fn run_daemon(restarted: bool) -> Result<()> {
     let binary = Binary::current()?;
-    let socket = daemon_socket()?;
+    let args: &[&str] = if restarted { &["daemon", "--restarted"] } else { &["daemon"] };
+    if platform::detach_daemon(args)? {
+        return Ok(());
+    }
+    wait_previous(restarted);
     if is_running() {
         bail!("o daemon já está rodando");
     }
-    if let Some(dir) = socket.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket)
-        .with_context(|| format!("falha ao abrir {}", socket.display()))?;
+    platform::clear_endpoint();
+    let listener = ListenerOptions::new()
+        .name(daemon_endpoint()?)
+        .create_sync()
+        .context("falha ao abrir o canal do daemon")?;
 
     let (sender, receiver) = mpsc::channel();
     spawn_watcher("ipc", sender.clone(), move |tx| serve_ipc(listener, tx));
-    spawn_watcher("logind", sender.clone(), watch_logind);
-    if crate::hypr::in_session() {
-        spawn_watcher("hyprland", sender.clone(), watch_hyprland);
-        spawn_watcher("bloqueio", sender.clone(), watch_lock);
+    for (name, source) in platform::event_sources() {
+        spawn_watcher(name, sender.clone(), source);
     }
     drop(sender);
 
@@ -83,29 +86,34 @@ impl Binary {
         now.is_some() && now != self.modified
     }
 
-    /// Substitui o processo pelo binário novo; só retorna em caso de erro.
+    /// Troca o processo pelo binário novo; só retorna em caso de erro.
     fn restart(&self) -> anyhow::Error {
-        use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&self.path)
-            .args(["daemon", "--restarted"])
-            .exec();
-        anyhow!("falha ao reiniciar o daemon: {err}")
+        platform::restart_self(&self.path, &["daemon", "--restarted"])
+    }
+}
+
+/// Depois de uma atualização, dá tempo do daemon antigo sair.
+fn wait_previous(restarted: bool) {
+    let deadline = Instant::now() + DAEMON_HANDOFF;
+    while restarted && is_running() && Instant::now() < deadline {
+        std::thread::sleep(DAEMON_TICK / 4);
     }
 }
 
 /// O daemon responde no socket?
 pub fn is_running() -> bool {
-    daemon_socket().is_ok_and(|s| UnixStream::connect(s).is_ok())
+    daemon_endpoint().is_ok_and(|name| Stream::connect(name).is_ok())
 }
 
 /// Envia um evento ao daemon.
 pub fn emit(event: &str) -> Result<()> {
     validate_name(event)?;
-    let mut stream = UnixStream::connect(daemon_socket()?)
+    let stream = Stream::connect(daemon_endpoint()?)
         .map_err(|_| anyhow!("daemon não está rodando (pcue daemon)"))?;
-    writeln!(stream, "emit {event}")?;
+    let mut reader = BufReader::new(stream);
+    writeln!(reader.get_mut(), "emit {event}")?;
     let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply)?;
+    reader.read_line(&mut reply)?;
     if reply.trim() != "ok" {
         bail!("daemon recusou: {}", reply.trim());
     }
@@ -328,10 +336,11 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 /// Roda um observador em thread própria, registrando a falha no log.
-fn spawn_watcher<F>(name: &'static str, sender: Sender<String>, watcher: F)
+fn spawn_watcher<F>(name: &str, sender: Sender<String>, watcher: F)
 where
     F: FnOnce(Sender<String>) -> Result<()> + Send + 'static,
 {
+    let name = name.to_string();
     std::thread::spawn(move || {
         if let Err(err) = watcher(sender) {
             log(&format!("observador {name} parou: {err:#}"));
@@ -340,11 +349,12 @@ where
 }
 
 /// Atende `emit <evento>` e `ping` no socket.
-fn serve_ipc(listener: UnixListener, sender: Sender<String>) -> Result<()> {
+fn serve_ipc(listener: Listener, sender: Sender<String>) -> Result<()> {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        if BufReader::new(&stream).read_line(&mut line).is_err() {
+        if reader.read_line(&mut line).is_err() {
             continue;
         }
         let reply = match line.trim().split_once(' ') {
@@ -355,106 +365,7 @@ fn serve_ipc(listener: UnixListener, sender: Sender<String>) -> Result<()> {
             _ if line.trim() == "ping" => "ok".to_string(),
             _ => format!("comando inválido: {}", line.trim()),
         };
-        let _ = writeln!(&stream, "{reply}");
-    }
-    Ok(())
-}
-
-/// Bloqueio, desbloqueio e retorno da suspensão pelo logind.
-fn watch_logind(sender: Sender<String>) -> Result<()> {
-    use zbus::blocking::{Connection, MessageIterator};
-    use zbus::zvariant::OwnedValue;
-
-    let connection = Connection::system()?;
-    let session = current_session(&connection);
-    if session.is_none() {
-        log("sessão do logind não encontrada: lock/unlock indisponíveis, resume segue ativo");
-    }
-    let rule = zbus::MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .sender("org.freedesktop.login1")?
-        .build();
-
-    let mut locked_hint = false;
-    for message in MessageIterator::for_match_rule(rule, &connection, None)? {
-        let message = message?;
-        let header = message.header();
-        let member = header.member().map(|m| m.as_str()).unwrap_or_default();
-        let ours = header
-            .path()
-            .zip(session.as_ref())
-            .is_some_and(|(path, session)| path.as_str() == session.as_str());
-        let event = match member {
-            "PrepareForSleep" => {
-                let sleeping: bool = message.body().deserialize()?;
-                (!sleeping).then_some("resume")
-            }
-            "Lock" if ours => Some("lock"),
-            "Unlock" if ours => Some("unlock"),
-            "PropertiesChanged" if ours => {
-                let (_, changed, _): (String, HashMap<String, OwnedValue>, Vec<String>) =
-                    message.body().deserialize()?;
-                changed
-                    .get("LockedHint")
-                    .and_then(|v| bool::try_from(v).ok())
-                    .filter(|hint| *hint != locked_hint)
-                    .map(|hint| {
-                        locked_hint = hint;
-                        if hint { "lock" } else { "unlock" }
-                    })
-            }
-            _ => None,
-        };
-        if let Some(event) = event {
-            sender.send(event.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-/// Caminho D-Bus da sessão: pelo PID e, se falhar, por `XDG_SESSION_ID`.
-fn current_session(
-    connection: &zbus::blocking::Connection,
-) -> Option<zbus::zvariant::OwnedObjectPath> {
-    const DEST: Option<&str> = Some("org.freedesktop.login1");
-    const PATH: &str = "/org/freedesktop/login1";
-    const IFACE: Option<&str> = Some("org.freedesktop.login1.Manager");
-    let by_pid = connection.call_method(DEST, PATH, IFACE, "GetSessionByPID", &std::process::id());
-    let reply = match by_pid {
-        Ok(reply) => reply,
-        Err(_) => {
-            let id = std::env::var("XDG_SESSION_ID").ok()?;
-            connection.call_method(DEST, PATH, IFACE, "GetSession", &id).ok()?
-        }
-    };
-    reply.body().deserialize().ok()
-}
-
-/// Bloqueio e desbloqueio pelo estado de session lock do Hyprland.
-fn watch_lock(sender: Sender<String>) -> Result<()> {
-    let hypr = crate::hypr::Hypr::connect()?;
-    let mut locked = hypr.is_locked()?;
-    loop {
-        std::thread::sleep(DAEMON_TICK);
-        let now = hypr.is_locked()?;
-        if now != locked {
-            locked = now;
-            sender.send(if now { "lock" } else { "unlock" }.to_string())?;
-        }
-    }
-}
-
-/// Monitores conectados e desconectados pelo socket de eventos do Hyprland.
-fn watch_hyprland(sender: Sender<String>) -> Result<()> {
-    let stream = UnixStream::connect(crate::hypr::event_socket()?)?;
-    for line in BufReader::new(stream).lines() {
-        let line = line?;
-        let event = match line.split_once(">>").map(|(name, _)| name) {
-            Some("monitoradded" | "monitoraddedv2") => "monitor_added",
-            Some("monitorremoved" | "monitorremovedv2") => "monitor_removed",
-            _ => continue,
-        };
-        sender.send(event.to_string())?;
+        let _ = writeln!(reader.get_mut(), "{reply}");
     }
     Ok(())
 }

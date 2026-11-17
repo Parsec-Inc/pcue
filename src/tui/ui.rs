@@ -109,7 +109,7 @@ fn draw_brand(frame: &mut Frame, area: Rect, app: &mut App) {
         Line::raw(""),
         chip(app.daemon_up, "daemon ativo", "daemon parado", mix(GREEN_LOW, GREEN_HIGH, pulse)),
         chip(app.installed, "no autostart", "fora do autostart", OK),
-        chip(app.hyprland, "Hyprland", "sem Hyprland", OK),
+        chip(app.manager.is_some(), app.manager.unwrap_or("-"), "sem gerenciador de janelas", OK),
     ];
     if running > 0 {
         lines.push(Line::styled(

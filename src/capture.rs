@@ -1,38 +1,36 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::config::Workspace;
-use crate::desktop::DesktopIndex;
-use crate::hypr::{Client, Hypr};
+use crate::platform::{Desktop, Window};
 use crate::script::Step;
-use crate::utils::shell_join;
 
 /// Passos `launch` para as janelas abertas agora.
 pub fn capture(only: &[String]) -> Result<Vec<String>> {
-    let hypr = Hypr::connect()?;
-    let mut groups: BTreeMap<(String, String), Vec<Client>> = BTreeMap::new();
-    for client in hypr.clients()? {
-        if client.class.is_empty() || !wanted(&client.workspace.name, only) {
+    let desktop = Desktop::connect();
+    if desktop.manager().is_none() {
+        bail!("capturar janelas precisa de um gerenciador de janelas suportado");
+    }
+    let mut groups: BTreeMap<(String, String), Vec<Window>> = BTreeMap::new();
+    for window in desktop.windows()? {
+        if window.class.is_empty() || !wanted(&window.workspace, only) {
             continue;
         }
         groups
-            .entry((client.workspace.name.clone(), client.class.clone()))
+            .entry((window.workspace.clone(), window.class.clone()))
             .or_default()
-            .push(client);
+            .push(window);
     }
 
-    let desktop = DesktopIndex::load();
     let mut steps = Vec::new();
-    for ((workspace, class), clients) in groups {
+    for ((workspace, class), windows) in groups {
         let command = desktop
-            .find_exec(&class)
-            .or_else(|| proc_cmdline(clients[0].pid))
+            .launch_command(&windows[0])
             .unwrap_or_else(|| class.to_lowercase());
-        for index in 0..clients.len() {
+        for index in 0..windows.len() {
             let step = Step::Launch {
                 command: command.clone(),
-                workspace: Some(to_workspace(&workspace)),
+                workspace: Some(desktop.workspace_for(&workspace)),
                 class: Some(regex::escape(&class)),
                 focus: false,
                 always: index > 0,
@@ -46,24 +44,4 @@ pub fn capture(only: &[String]) -> Result<Vec<String>> {
 /// Filtro opcional por workspace.
 fn wanted(workspace: &str, only: &[String]) -> bool {
     only.is_empty() || only.iter().any(|w| w == workspace)
-}
-
-/// Converte o nome reportado no formato aceito pelo dispatch.
-fn to_workspace(reported: &str) -> Workspace {
-    if reported.parse::<i64>().is_ok() || reported.starts_with("special:") {
-        Workspace(reported.to_string())
-    } else {
-        Workspace(format!("name:{reported}"))
-    }
-}
-
-/// Linha de comando do processo dono da janela.
-fn proc_cmdline(pid: i64) -> Option<String> {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let args: Vec<String> = raw
-        .split(|b| *b == 0)
-        .filter(|a| !a.is_empty())
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect();
-    (!args.is_empty()).then(|| shell_join(&args))
 }

@@ -43,15 +43,15 @@ pub fn running() -> HashMap<String, Progress> {
     entries
         .flatten()
         .filter_map(|entry| read_json::<Progress>(&entry.path()))
-        .filter(|p| PathBuf::from(format!("/proc/{}", p.pid)).exists())
+        .filter(|p| crate::platform::process_alive(p.pid))
         .map(|p| (p.routine.clone(), p))
         .collect()
 }
 
 /// Interrompe a execução da rotina.
 pub fn stop(progress: &Progress) -> Result<()> {
-    let status = std::process::Command::new("kill").arg(progress.pid.to_string()).status()?;
-    anyhow::ensure!(status.success(), "não foi possível parar {}", progress.routine);
+    crate::platform::kill(progress.pid)
+        .map_err(|err| err.context(format!("não foi possível parar {}", progress.routine)))?;
     clear(&progress.routine);
     Ok(())
 }

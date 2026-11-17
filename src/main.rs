@@ -3,13 +3,10 @@ mod capture;
 mod config;
 mod constants;
 mod daemon;
-mod desktop;
 mod history;
-mod hypr;
-mod input;
-mod install;
 mod keys;
 mod launcher;
+mod platform;
 mod player;
 mod progress;
 mod recorder;
@@ -88,7 +85,8 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    utils::migrate_legacy();
+    #[cfg(target_os = "linux")]
+    platform::migrate_legacy();
     let path = config_path()?;
     match cli.command.unwrap_or(Command::Tui) {
         Command::Tui => tui::run(path),
@@ -142,14 +140,14 @@ fn main() -> Result<()> {
             }
         }
         Command::Install => {
-            let file = install::install()?;
-            println!("daemon registrado em {}", file.display());
-            println!("vale no próximo login; para iniciar agora: pcue daemon &");
+            let place = platform::install()?;
+            println!("daemon registrado em {place}");
+            println!("vale no próximo login; para iniciar agora: pcue daemon");
             Ok(())
         }
         Command::Uninstall => {
-            match install::uninstall()? {
-                Some(file) => println!("daemon removido de {}", file.display()),
+            match platform::uninstall()? {
+                Some(place) => println!("daemon removido de {place}"),
                 None => println!("pcue não estava no autostart"),
             }
             Ok(())

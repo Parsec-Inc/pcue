@@ -7,7 +7,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::constants::{POLL_INTERVAL, SOCKET_READY_TIMEOUT};
-use crate::utils::{lua_str, xdg_runtime_base};
+use super::runtime_base;
+use crate::platform::Window;
+use super::lua_str;
 
 /// Sintaxe de dispatch aceita pelo Hyprland em execução.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,8 @@ pub struct Client {
     #[serde(rename = "initialClass")]
     pub initial_class: String,
     pub workspace: ClientWorkspace,
+    #[serde(default)]
+    pub title: String,
     pub pid: i64,
     #[serde(default)]
     pub at: [i32; 2],
@@ -57,19 +61,26 @@ fn visible_default() -> bool {
 }
 
 impl Client {
-    /// O ponto global está dentro da janela?
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.at[0] && y >= self.at[1] && x < self.at[0] + self.size[0] && y < self.at[1] + self.size[1]
-    }
-
     /// Ordem de abertura (o `stableId` cresce a cada janela nova).
-    pub fn opened_order(&self) -> u64 {
-        u64::from_str_radix(&self.stable_id, 16).unwrap_or(u64::MAX)
+    fn opened_order(&self) -> (u64, u64) {
+        (u64::from_str_radix(&self.stable_id, 16).unwrap_or(u64::MAX), 0)
     }
 
-    /// Janela visível na tela agora.
-    pub fn on_screen(&self) -> bool {
-        self.visible && !self.hidden
+    /// Converte para o formato comum aos sistemas.
+    pub fn into_window(self) -> Window {
+        Window {
+            opened: self.opened_order(),
+            on_screen: self.visible && !self.hidden,
+            id: self.address,
+            class: self.class,
+            alt_class: self.initial_class,
+            title: self.title,
+            workspace: self.workspace.name,
+            at: self.at,
+            size: self.size,
+            pid: self.pid,
+            focus_rank: self.focus_history_id,
+        }
     }
 }
 
@@ -156,7 +167,6 @@ impl Hypr {
         self.dispatch(&dispatch)
     }
 
-    /// A sessão está bloqueada (qualquer tela de bloqueio ext-session-lock)?
     /// Namespaces das superfícies de shell (barras, painéis, fundo).
     pub fn layers(&self) -> Result<Vec<String>> {
         #[derive(Deserialize)]
@@ -176,6 +186,7 @@ impl Hypr {
             .collect())
     }
 
+    /// A sessão está bloqueada (qualquer tela de bloqueio ext-session-lock)?
     pub fn is_locked(&self) -> Result<bool> {
         #[derive(Deserialize)]
         struct Locked {
@@ -214,16 +225,20 @@ impl Hypr {
         self.dispatch(&dispatch)
     }
 
-    /// Janela visível sob o ponto, a mais recente em foco primeiro.
-    pub fn window_at(&self, x: i32, y: i32) -> Result<Option<Client>> {
-        Ok(self
-            .clients()?
-            .into_iter()
-            .filter(|c| c.on_screen() && c.contains(x, y))
-            .min_by_key(|c| c.focus_history_id))
+    /// Janela em foco.
+    pub fn active_window(&self) -> Result<Option<Client>> {
+        let raw = self.request("j/activewindow")?;
+        if raw.trim() == "{}" {
+            return Ok(None);
+        }
+        serde_json::from_str(&raw).map(Some).context("resposta inesperada de j/activewindow")
     }
 
-    /// Move uma janela para o workspace sem trocar o foco.
+    /// Workspace em foco.
+    pub fn active_workspace(&self) -> Result<Workspace> {
+        serde_json::from_str(&self.request("j/activeworkspace")?).context("resposta inesperada de j/activeworkspace")
+    }
+
     /// Monitores conectados.
     pub fn monitors(&self) -> Result<Vec<Monitor>> {
         serde_json::from_str(&self.request("j/monitors")?).context("resposta inesperada de j/monitors")
@@ -263,6 +278,7 @@ impl Hypr {
         self.dispatch(&dispatch)
     }
 
+    /// Move uma janela para o workspace sem trocar o foco.
     pub fn move_window(&self, address: &str, workspace: &str) -> Result<()> {
         let dispatch = match self.dialect {
             Dialect::Lua => format!(
@@ -294,7 +310,7 @@ impl Hypr {
 fn socket_dir() -> Result<PathBuf> {
     let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
         .context("HYPRLAND_INSTANCE_SIGNATURE não definida (rodando fora do Hyprland?)")?;
-    Ok(xdg_runtime_base()?.join("hypr").join(signature))
+    Ok(runtime_base()?.join("hypr").join(signature))
 }
 
 /// Socket de eventos (`socket2`) da instância atual.

@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::constants::DESKTOP_FIELD_CODES;
-use crate::utils::{home_dir, xdg_dir};
+use super::xdg_dir;
+use crate::utils::home_dir;
 
 /// Entrada `.desktop` com o que interessa para abrir o app.
 struct Entry {

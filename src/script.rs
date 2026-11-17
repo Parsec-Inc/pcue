@@ -2,11 +2,10 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use evdev::Key;
 
 use crate::config::Workspace;
 use crate::constants::DEFAULT_WAIT_TIMEOUT;
-use crate::keys::{combo_name, parse_combo};
+use crate::keys::{Key, combo_name, parse_combo};
 
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
 pub const SYNTAX: &[&str] = &[
@@ -15,6 +14,7 @@ pub const SYNTAX: &[&str] = &[
     "workspace 3   vai para o workspace exato (SUPER+N pode ser relativo ao monitor)",
     "wait_monitors [timeout=30s]   espera os monitores das regras de workspace e reposiciona os workspaces",
     "wait_window class=REGEX [nth=N] [timeout=30s]    sleep 500ms | 2s | 1m | 1h",
+    "focus class=REGEX [nth=N] [timeout=30s]   foca a janela do app (troca de workspace se preciso)",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
     "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
     "call outra_rotina      # comentário",
@@ -37,6 +37,12 @@ pub enum Step {
     WaitWindow {
         class: String,
         /// Quantas janelas da class precisam existir.
+        nth: usize,
+        timeout: Duration,
+    },
+    /// Foca a n-ésima janela da class, esperando ela existir.
+    Focus {
+        class: String,
         nth: usize,
         timeout: Duration,
     },
@@ -157,6 +163,11 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
             always: options.flag("always"),
         },
         "wait_window" => Step::WaitWindow {
+            class: options.required("class")?,
+            nth: parse_nth(&mut options)?,
+            timeout: parse_timeout(&mut options)?,
+        },
+        "focus" => Step::Focus {
             class: options.required("class")?,
             nth: parse_nth(&mut options)?,
             timeout: parse_timeout(&mut options)?,
@@ -429,25 +440,6 @@ impl Button {
         }
     }
 
-    /// Código evdev do botão.
-    pub fn key(self) -> Key {
-        match self {
-            Self::Left => Key::BTN_LEFT,
-            Self::Right => Key::BTN_RIGHT,
-            Self::Middle => Key::BTN_MIDDLE,
-        }
-    }
-
-    /// Botão correspondente ao código evdev.
-    pub fn from_key(key: Key) -> Option<Self> {
-        match key {
-            Key::BTN_LEFT => Some(Self::Left),
-            Key::BTN_RIGHT => Some(Self::Right),
-            Key::BTN_MIDDLE => Some(Self::Middle),
-            _ => None,
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -482,8 +474,9 @@ impl fmt::Display for Step {
                 }
                 Ok(())
             }
-            Step::WaitWindow { class, nth, timeout } => {
-                write!(f, "wait_window class={}", quote(class))?;
+            Step::WaitWindow { class, nth, timeout } | Step::Focus { class, nth, timeout } => {
+                let verb = if matches!(self, Step::Focus { .. }) { "focus" } else { "wait_window" };
+                write!(f, "{verb} class={}", quote(class))?;
                 if *nth > 1 {
                     write!(f, " nth={nth}")?;
                 }

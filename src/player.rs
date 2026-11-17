@@ -4,9 +4,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::Config;
 use crate::constants::CLICK_MOVE_SETTLE;
-use crate::hypr::Hypr;
-use crate::input::VirtualInput;
-use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, wait_layer, wait_monitors, windows_of};
+use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
+use crate::platform::{Desktop, VirtualInput};
 use crate::progress::{self, Progress};
 use crate::script::{ClickTarget, Guard, Line, MAX_CALL_DEPTH, Step, parse_steps};
 use crate::utils::log;
@@ -20,17 +19,17 @@ pub struct Failure {
 /// Executa passos, inclusive rotinas chamadas por `call`.
 pub struct Player<'a> {
     config: &'a Config,
-    hypr: Option<&'a Hypr>,
+    desktop: &'a Desktop,
     timeout: Duration,
     input: Option<VirtualInput>,
     stack: Vec<String>,
 }
 
 impl<'a> Player<'a> {
-    pub fn new(config: &'a Config, hypr: Option<&'a Hypr>) -> Self {
+    pub fn new(config: &'a Config, desktop: &'a Desktop) -> Self {
         Self {
             config,
-            hypr,
+            desktop,
             timeout: Duration::from_secs(config.settings.timeout_secs),
             input: None,
             stack: Vec::new(),
@@ -90,12 +89,11 @@ impl<'a> Player<'a> {
     }
 
     fn window_exists(&self, class: &str) -> Result<bool> {
-        let hypr = self.hypr.context("if_window/unless_window precisam do Hyprland")?;
-        Ok(!windows_of(hypr.clients()?, &anchored_regex(class)?).is_empty())
+        Ok(!windows_of(self.desktop.windows()?, &anchored_regex(class)?).is_empty())
     }
 
     fn run_step(&mut self, step: &Step) -> Result<()> {
-        let (hypr, timeout) = (self.hypr, self.timeout);
+        let (desktop, timeout) = (self.desktop, self.timeout);
         match step {
             Step::Launch {
                 command,
@@ -111,25 +109,23 @@ impl<'a> Player<'a> {
                     focus: *focus,
                     always: *always,
                 };
-                launch(hypr, &spec, timeout)
+                launch(desktop, &spec, timeout)
             }
-            Step::WaitWindow { class, nth, timeout } => match hypr {
-                Some(hypr) => nth_window(hypr, class, *nth, *timeout).map(|_| ()),
-                None => {
-                    log("sem Hyprland: wait_window vira espera fixa do timeout");
+            Step::WaitWindow { class, nth, timeout } => {
+                if desktop.manager().is_none() {
+                    log("sem gerenciador de janelas: wait_window vira espera fixa do timeout");
                     std::thread::sleep(*timeout);
-                    Ok(())
+                    return Ok(());
                 }
-            },
-            Step::WaitLayer { namespace, timeout } => {
-                wait_layer(hypr.context("wait_layer precisa do Hyprland")?, namespace, *timeout)
+                nth_window(desktop, class, *nth, *timeout).map(|_| ())
             }
-            Step::Workspace(workspace) => hypr
-                .context("workspace precisa do Hyprland")?
-                .focus_workspace(&workspace.0),
-            Step::WaitMonitors(timeout) => {
-                wait_monitors(hypr.context("wait_monitors precisa do Hyprland")?, *timeout)
+            Step::Focus { class, nth, timeout } => {
+                let window = nth_window(desktop, class, *nth, *timeout)?;
+                desktop.focus_window(&window)
             }
+            Step::WaitLayer { namespace, timeout } => desktop.wait_layer(namespace, *timeout),
+            Step::Workspace(workspace) => desktop.focus_workspace(workspace),
+            Step::WaitMonitors(timeout) => desktop.wait_monitors(*timeout),
             Step::Sleep(duration) => {
                 std::thread::sleep(*duration);
                 Ok(())
@@ -138,9 +134,8 @@ impl<'a> Player<'a> {
             Step::Type(text) => self.device()?.type_text(text),
             Step::Scroll(amount) => self.device()?.scroll(*amount),
             Step::Click { button, target } => {
-                let hypr = hypr.context("click precisa do Hyprland para posicionar o cursor")?;
-                let (x, y) = resolve_click(hypr, target, timeout)?;
-                hypr.move_cursor(x, y)?;
+                let (x, y) = resolve_click(desktop, target, timeout)?;
+                desktop.move_cursor(x, y)?;
                 std::thread::sleep(CLICK_MOVE_SETTLE);
                 self.device()?.click(*button)
             }
@@ -182,14 +177,14 @@ fn describe(step: &Step) -> String {
 }
 
 /// Posição global do clique; janela-alvo é focada antes.
-fn resolve_click(hypr: &Hypr, target: &ClickTarget, timeout: Duration) -> Result<(i32, i32)> {
+fn resolve_click(desktop: &Desktop, target: &ClickTarget, timeout: Duration) -> Result<(i32, i32)> {
     match target {
         ClickTarget::Absolute { x, y } => Ok((*x, *y)),
         ClickTarget::Window { class, nth, x, y } => {
-            let window = nth_window(hypr, class, *nth, timeout)?;
-            hypr.focus_window(&window.address)?;
+            let window = nth_window(desktop, class, *nth, timeout)?;
+            desktop.focus_window(&window)?;
             std::thread::sleep(CLICK_MOVE_SETTLE);
-            let window = nth_window(hypr, class, *nth, timeout)?;
+            let window = nth_window(desktop, class, *nth, timeout)?;
             Ok((window.at[0] + x, window.at[1] + y))
         }
     }

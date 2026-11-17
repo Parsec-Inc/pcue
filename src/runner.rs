@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::Config;
 use crate::constants::RUNNING_DIR;
 use crate::history::{self, Run};
-use crate::hypr::Hypr;
+use crate::platform::{self, Desktop};
 use crate::player::Player;
 use crate::progress;
 use crate::script::{Line, parse_steps};
@@ -67,7 +67,7 @@ pub fn run_routine(config: &Config, name: &str, trigger: &str, selection: Select
         .with_context(|| format!("rotina '{name}' não existe"))?;
     let lines = selection.apply(parse_steps(&routine.steps)?)?;
     let _guard = RunGuard::acquire(name)?;
-    let hypr = Hypr::detect();
+    let desktop = Desktop::connect();
     let trigger = match selection.label() {
         Some(label) => format!("{trigger} ({label})"),
         None => trigger.to_string(),
@@ -76,7 +76,7 @@ pub fn run_routine(config: &Config, name: &str, trigger: &str, selection: Select
     log(&format!("[{name}] início ({trigger})"));
     let started = timestamp();
     let clock = Instant::now();
-    let failure = Player::new(config, hypr.as_ref()).play(name, &lines).err();
+    let failure = Player::new(config, &desktop).play(name, &lines).err();
     progress::clear(name);
     let error = failure.as_ref().map(|f| format!("{:#}", f.error));
 
@@ -110,13 +110,15 @@ pub fn spawn_run(
     delay_ms: u64,
     selection: Selection,
 ) -> std::io::Result<Child> {
-    Command::new(std::env::current_exe()?)
+    let mut command = Command::new(std::env::current_exe()?);
+    command
         .args(["run", routine, "--trigger", trigger, "--delay-ms", &delay_ms.to_string()])
         .args(selection.args())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    platform::background(&mut command);
+    command.spawn()
 }
 
 /// Trava por rotina; o kernel solta quando o processo termina.

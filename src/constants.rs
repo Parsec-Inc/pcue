@@ -8,21 +8,28 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_STARTUP_DELAY_MS: u64 = 1500;
 
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "linux")]
 pub const SOCKET_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
+#[cfg(target_os = "linux")]
 pub const BLOCK_BEGIN: &str = ">>> pcue >>>";
+#[cfg(target_os = "linux")]
 pub const BLOCK_END: &str = "<<< pcue <<<";
 
 /// Nome anterior da ferramenta, para migrar config, estado e autostart.
+#[cfg(target_os = "linux")]
 pub const LEGACY_NAME: &str = "pwboot";
 
+#[cfg(target_os = "linux")]
 pub const DESKTOP_FIELD_CODES: &[&str] = &[
     "%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k", "%v", "%m", "@@", "@@u", "@@f",
 ];
 
 pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(target_os = "linux")]
 pub const VIRTUAL_DEVICE_NAME: &str = "pcue-virtual-input";
+#[cfg(target_os = "linux")]
 pub const VIRTUAL_DEVICE_SETTLE: Duration = Duration::from_millis(400);
 pub const KEY_STEP_DELAY: Duration = Duration::from_millis(12);
 pub const CLICK_MOVE_SETTLE: Duration = Duration::from_millis(60);
@@ -30,11 +37,15 @@ pub const CLICK_MOVE_SETTLE: Duration = Duration::from_millis(60);
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
 pub const RECORD_SLEEP_ROUNDING_MS: u128 = 100;
+#[cfg(target_os = "linux")]
 pub const IGNORED_DEVICE_PREFIXES: &[&str] = &["pcue", "ydotoold"];
 
 pub const HISTORY_FILE: &str = "history.jsonl";
+#[cfg(target_os = "linux")]
 pub const DAEMON_SOCKET: &str = "daemon.sock";
 pub const DAEMON_TICK: Duration = Duration::from_secs(1);
+/// Quanto o daemon novo espera o antigo liberar o canal.
+pub const DAEMON_HANDOFF: Duration = Duration::from_secs(5);
 pub const EVENT_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 pub const TUI_RUN_DELAY_MS: u64 = 1500;
 
@@ -64,4 +75,8 @@ pub const BOOT_WAIT_TIMEOUT: &str = "3m";
 /// Folga depois que o desktop terminou de carregar.
 pub const BOOT_SETTLE: &str = "1500ms";
 /// Barras conhecidas, na ordem de preferência.
+#[cfg(target_os = "linux")]
 pub const KNOWN_BARS: &[&str] = &["quickshell:bar", "waybar"];
+/// No Windows, quanto a quantidade de monitores precisa ficar parada no boot.
+#[cfg(windows)]
+pub const MONITOR_SETTLE: Duration = Duration::from_secs(2);

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::constants::{BLOCK_BEGIN, BLOCK_END, LEGACY_NAME};
-use crate::utils::{hypr_config_dir, lua_str, xdg_autostart_file};
+use super::{hypr_config_dir, lua_str, xdg_autostart_file};
 
 /// Onde e como o bloco de autostart é escrito.
 struct Target {
@@ -29,7 +29,7 @@ impl Style {
 }
 
 /// Registra o daemon para iniciar junto com a sessão gráfica.
-pub fn install() -> Result<PathBuf> {
+pub fn install() -> Result<String> {
     let exe = std::env::current_exe().context("não foi possível achar o próprio executável")?;
     let target = target()?;
     let command = format!("{} daemon", exe.display());
@@ -50,11 +50,11 @@ pub fn install() -> Result<PathBuf> {
     let comment = target.style.comment();
     let updated = upsert_block(&strip_block(&current, comment), comment, &body);
     write_with_backup(&target.file, &current, &updated)?;
-    Ok(target.file)
+    Ok(target.file.display().to_string())
 }
 
 /// Remove o bloco do pcue da config do Hyprland.
-pub fn uninstall() -> Result<Option<PathBuf>> {
+pub fn uninstall() -> Result<Option<String>> {
     let target = target()?;
     let current = read_or_empty(&target.file)?;
     let updated = strip_block(&current, target.style.comment());
@@ -62,7 +62,7 @@ pub fn uninstall() -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     write_with_backup(&target.file, &current, &updated)?;
-    Ok(Some(target.file))
+    Ok(Some(target.file.display().to_string()))
 }
 
 /// Hyprland Lua, Hyprland `.conf` ou autostart XDG nos demais desktops.

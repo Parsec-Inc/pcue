@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -14,7 +12,6 @@ use super::anim::Slide;
 use super::text_input::TextInput;
 use crate::config::{Config, Routine, Trigger, validate_name};
 use crate::constants::{BOOT_EVENT, BUILTIN_EVENTS, TUI_RUN_DELAY_MS};
-use crate::hypr::Hypr;
 use crate::history::{self, Run};
 use crate::progress::{self, Progress};
 use crate::recorder::{self, RecordEvent};
@@ -22,7 +19,8 @@ use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
 use crate::script::{SYNTAX, is_comment, parse_line, parse_steps};
 use crate::utils::{expand_home, log_path, runtime_dir};
-use crate::{boot, capture, daemon, install};
+use crate::platform::{self as install, Desktop};
+use crate::{boot, capture, daemon};
 
 /// Intervalo entre leituras de daemon, histórico e agenda.
 const REFRESH_EVERY: Duration = Duration::from_secs(2);
@@ -187,7 +185,8 @@ pub struct App {
     pub finished: Option<Finished>,
     pub daemon_up: bool,
     pub installed: bool,
-    pub hyprland: bool,
+    /// Gerenciador de janelas controlado (ex.: Hyprland).
+    pub manager: Option<&'static str>,
     pub filter: Option<Filter>,
     pub recording: Option<Recording>,
     pub slides: Slides,
@@ -226,7 +225,7 @@ impl App {
             finished: None,
             daemon_up: daemon::is_running(),
             installed: install::is_installed(),
-            hyprland: crate::hypr::in_session(),
+            manager: Desktop::connect().manager(),
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -961,7 +960,7 @@ impl App {
     fn save_trigger(&mut self, editing: Option<usize>, trigger: Trigger) -> Result<()> {
         trigger.validate()?;
         let boot = matches!(&trigger, Trigger::Event { event } if event == BOOT_EVENT);
-        let hypr = boot.then(Hypr::detect).flatten();
+        let desktop = boot.then(Desktop::connect);
         let mut prefixed = false;
         self.mutate_routine(|r| {
             match editing {
@@ -969,7 +968,7 @@ impl App {
                 None => r.triggers.push(trigger),
             }
             if boot {
-                prefixed = boot::ensure_prefix(&mut r.steps, hypr.as_ref());
+                prefixed = boot::ensure_prefix(&mut r.steps, desktop.as_ref());
             }
         })?;
         self.focus = Pane::Triggers;
@@ -1123,9 +1122,9 @@ impl App {
 
     fn toggle_install(&mut self) {
         let result = if self.installed {
-            install::uninstall().map(|f| f.map(|p| format!("removido do autostart ({})", p.display())))
+            install::uninstall().map(|f| f.map(|p| format!("removido do autostart ({p})")))
         } else {
-            install::install().map(|p| Some(format!("daemon registrado em {}", p.display())))
+            install::install().map(|p| Some(format!("daemon registrado em {p}")))
         };
         match result {
             Ok(message) => {
@@ -1224,22 +1223,12 @@ impl App {
         let dir = runtime_dir()?;
         std::fs::create_dir_all(&dir)?;
         let file = dir.join(format!("{name}.pcue"));
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&file)?
-            .write_all(content.as_bytes())?;
+        install::private_file(&file)?.write_all(content.as_bytes())?;
 
         let editor = std::env::var("VISUAL")
             .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "nano".into());
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{editor} \"$1\""))
-            .arg("sh")
-            .arg(&file)
+            .unwrap_or_else(|_| install::DEFAULT_EDITOR.into());
+        let status = install::editor_command(&editor, &file)
             .status()
             .with_context(|| format!("falha ao abrir {editor}"))?;
         let edited = std::fs::read_to_string(&file)?;

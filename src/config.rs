@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -71,6 +70,7 @@ pub struct Workspace(pub String);
 
 impl Workspace {
     /// Nome do workspace como o Hyprland reporta nas janelas.
+    #[cfg(target_os = "linux")]
     pub fn reported_name(&self) -> &str {
         self.0.strip_prefix("name:").unwrap_or(&self.0)
     }
@@ -182,15 +182,9 @@ impl Config {
         let dir = path.parent().context("caminho de config sem diretório")?;
         std::fs::create_dir_all(dir)?;
         let tmp = path.with_extension("toml.tmp");
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut file = crate::platform::private_file(&tmp)?;
         file.write_all(toml::to_string_pretty(self)?.as_bytes())?;
         file.sync_all()?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
         std::fs::rename(&tmp, path).with_context(|| format!("falha ao gravar {}", path.display()))
     }
 

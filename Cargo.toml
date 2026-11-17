@@ -7,7 +7,7 @@ description = "Rotinas para o desktop Linux: abre apps nos workspaces, grava e r
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-evdev = "0.12"
+interprocess = "2"
 jiff = "0.2"
 ratatui = "0.29"
 png = "0.18.1"
@@ -15,7 +15,24 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
 zbus = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 strip = true

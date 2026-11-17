@@ -1,29 +1,20 @@
-use crate::constants::{BOOT_MARKER, BOOT_SETTLE, BOOT_WAIT_TIMEOUT, KNOWN_BARS};
-use crate::hypr::Hypr;
-use crate::script::quote;
+use crate::constants::{BOOT_MARKER, BOOT_SETTLE};
+use crate::platform::Desktop;
 
 /// Passos que esperam o desktop ficar pronto, conforme o ambiente detectado.
-pub fn boot_prefix(hypr: Option<&Hypr>) -> Vec<String> {
-    let Some(hypr) = hypr else {
-        return vec![BOOT_MARKER.to_string(), format!("sleep {BOOT_SETTLE}")];
-    };
-    let layers = hypr.layers().unwrap_or_default();
-    let bar = KNOWN_BARS.iter().find(|bar| layers.iter().any(|l| l == *bar));
+pub fn boot_prefix(desktop: Option<&Desktop>) -> Vec<String> {
     let mut steps = vec![BOOT_MARKER.to_string()];
-    if let Some(bar) = bar {
-        steps.push(format!("wait_layer namespace={} timeout={BOOT_WAIT_TIMEOUT}", quote(bar)));
-    }
-    steps.push(format!("wait_monitors timeout={BOOT_WAIT_TIMEOUT}"));
+    steps.extend(desktop.map(Desktop::boot_waits).unwrap_or_default());
     steps.push(format!("sleep {BOOT_SETTLE}"));
     steps
 }
 
 /// Põe o prefixo no início, se ainda não estiver lá.
-pub fn ensure_prefix(steps: &mut Vec<String>, hypr: Option<&Hypr>) -> bool {
+pub fn ensure_prefix(steps: &mut Vec<String>, desktop: Option<&Desktop>) -> bool {
     if steps.iter().any(|s| s.trim() == BOOT_MARKER) {
         return false;
     }
-    steps.splice(0..0, boot_prefix(hypr));
+    steps.splice(0..0, boot_prefix(desktop));
     true
 }
 
