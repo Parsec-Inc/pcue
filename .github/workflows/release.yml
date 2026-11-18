@@ -1,10 +1,8 @@
 name: Release
 
-# Push na main: testes, bump pelo commitizen, binários e pacotes de cada plataforma,
-# release no GitHub e, se ligados, AUR e COPR. Ver docs/PACKAGING.md.
-
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -21,25 +19,27 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  BASE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+
 jobs:
   tests:
-    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || github.event.pull_request.merged
     uses: ./.github/workflows/tests.yml
 
-  bump:
-    needs: tests
+  version:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || github.event.pull_request.merged
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
     outputs:
       released: ${{ steps.bump.outputs.released }}
       version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.BASE_SHA }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v10.3.2
 
@@ -64,15 +64,17 @@ jobs:
           [ "$status" -eq 0 ] || exit "$status"
           version="$(git describe --tags --exact-match HEAD)"
           uvx --from commitizen cz changelog "$version" --dry-run > release-notes.md
-          echo "released=true" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git bundle create bump.bundle "$BASE_SHA..refs/tags/$version"
+          {
+            echo "released=true"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
 
-      # A tag sobe antes dos builds para todos os jobs compilarem o mesmo commit.
-      - name: Push version commit and tag
+      - uses: actions/upload-artifact@v7
         if: steps.bump.outputs.released == 'true'
-        env:
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: git push --atomic origin HEAD:main "$VERSION"
+        with:
+          name: bump
+          path: bump.bundle
 
       - uses: actions/upload-artifact@v7
         if: steps.bump.outputs.released == 'true'
@@ -81,17 +83,21 @@ jobs:
           path: release-notes.md
 
   linux:
-    needs: bump
-    if: needs.bump.outputs.released == 'true'
+    needs: version
+    if: needs.version.outputs.released == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      VERSION: ${{ needs.bump.outputs.version }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.bump.outputs.version }}
+          ref: ${{ env.BASE_SHA }}
           persist-credentials: false
+
+      - uses: ./.github/actions/release-checkout
+        with:
+          version: ${{ needs.version.outputs.version }}
 
       - name: Install toolchain
         run: |
@@ -128,19 +134,23 @@ jobs:
           path: dist/*.src.rpm
 
   msi:
-    needs: [bump, linux]
+    needs: [version, linux]
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
       run:
         shell: bash
     env:
-      VERSION: ${{ needs.bump.outputs.version }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.bump.outputs.version }}
+          ref: ${{ env.BASE_SHA }}
           persist-credentials: false
+
+      - uses: ./.github/actions/release-checkout
+        with:
+          version: ${{ needs.version.outputs.version }}
 
       # o MSI empacota o mesmo .exe da release, compilado no job linux
       - uses: actions/download-artifact@v8
@@ -162,32 +172,43 @@ jobs:
           path: dist/*.msi
 
   release:
-    needs: [bump, linux, msi]
-    # publica o que saiu mesmo se o MSI falhar; o linux (binários do atualizador) é obrigatório
-    if: ${{ !cancelled() && needs.linux.result == 'success' }}
+    needs: [version, tests, linux, msi]
+    if: ${{ !cancelled() && needs.tests.result == 'success' && needs.linux.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     env:
-      VERSION: ${{ needs.bump.outputs.version }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE_SHA }}
+
+      - uses: ./.github/actions/release-checkout
+        with:
+          version: ${{ needs.version.outputs.version }}
+
+      - name: Push version commit and tag
+        run: git push --atomic origin "$(git rev-parse "$VERSION^{commit}"):refs/heads/main" "refs/tags/$VERSION"
+
       - uses: actions/download-artifact@v8
         with:
           pattern: '{linux,msi,notes}'
-          path: dist
+          path: ${{ runner.temp }}/dist
           merge-multiple: true
 
       - name: GitHub release
+        working-directory: ${{ runner.temp }}/dist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mv dist/release-notes.md .
-          (cd dist && sha256sum * > SHA256SUMS)
-          gh release create "$VERSION" dist/* -R "$GITHUB_REPOSITORY" --title "$VERSION" --notes-file release-notes.md
+          mv release-notes.md ..
+          sha256sum -- * > SHA256SUMS
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --title "$VERSION" --notes-file ../release-notes.md -- *
 
   aur:
-    needs: [bump, release]
+    needs: [version, release]
     if: ${{ vars.PUBLISH_AUR == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -205,11 +226,11 @@ jobs:
           updpkgsums: true
           commit_username: github-actions[bot]
           commit_email: 41898282+github-actions[bot]@users.noreply.github.com
-          commit_message: ${{ needs.bump.outputs.version }}
+          commit_message: ${{ needs.version.outputs.version }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   copr:
-    needs: [bump, release]
+    needs: [version, release]
     if: ${{ vars.PUBLISH_COPR == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
