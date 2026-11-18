@@ -1,3 +1,14 @@
+## 0.4.0 (2026-11-18)
+
+### Feat
+
+- **tui**: C limpa todos os passos da rotina, com confirmação
+- **steps**: hold, release, move e drag para ações simultâneas; gravação de arrastos e cliques com modificador
+
+### Refactor
+
+- ClickTarget como janela opcional + ponto, hold com posição igual ao click e gatilho de boot em um lugar só
+
 ## 0.3.1 (2026-11-17)
 
 ### Fix

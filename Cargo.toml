@@ -1,6 +1,6 @@
 [package]
 name = "pcue"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Rotinas para o desktop Linux: abre apps nos workspaces, grava e reproduz ações, dispara por evento ou horário"
 
