@@ -1,3 +1,12 @@
+## 0.8.0 (2026-11-18)
+
+### Feat
+
+- **phone**: espera a tela acender, foco vazio com bloqueio e Ctrl+Y copia campos da TUI
+- **phone**: controle do celular via adb nas rotinas e gravação dos toques
+- **daemon**: gatilho por dispositivo USB e passo shell oculto
+- **daemon**: gatilho por notificação de app (Teams, WhatsApp...) com filtros por regex
+
 ## 0.7.0 (2026-11-18)
 
 ### Feat
