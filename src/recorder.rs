@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::constants::{DESKTOP_POLL, RECORD_COUNTDOWN_SECS};
+use crate::constants::{DESKTOP_POLL, DRAG_THRESHOLD, RECORD_COUNTDOWN_SECS, RECORDED_DRAG_MAX, RECORDED_DRAG_MIN};
 use crate::draft::{self, Action, ActionKind, Change, DesktopEvent, Draft, Seen};
 use crate::keys::{Key, MODIFIERS, is_modifier, is_shift, is_super, key_to_char};
 use crate::launcher::class_and_nth;
@@ -191,6 +191,15 @@ enum Flow {
     Stop,
 }
 
+/// Botão apertado, esperando soltar para virar clique ou arrasto.
+struct Press {
+    button: Button,
+    time: Instant,
+    screen: (i32, i32),
+    target: ClickTarget,
+    modifiers: Vec<Key>,
+}
+
 /// Acumula eventos crus em ações legíveis.
 struct Recorder<'a> {
     desktop: &'a Desktop,
@@ -198,6 +207,7 @@ struct Recorder<'a> {
     actions: Vec<Action>,
     changes: Vec<DesktopEvent>,
     held: Vec<Key>,
+    press: Option<Press>,
     lone_modifier: Option<Key>,
     text: String,
     text_span: Option<(Instant, Instant)>,
@@ -213,6 +223,7 @@ impl<'a> Recorder<'a> {
             actions: Vec::new(),
             changes: Vec::new(),
             held: Vec::new(),
+            press: None,
             lone_modifier: None,
             text: String::new(),
             text_span: None,
@@ -224,10 +235,12 @@ impl<'a> Recorder<'a> {
     fn handle(&mut self, time: Instant, input: RawInput) -> Flow {
         match input {
             RawInput::Key { key, down } => return self.on_key(time, key, down),
-            RawInput::Button(button) => {
+            RawInput::Button { button, down } => {
                 self.lone_modifier = None;
-                if !self.paused {
-                    self.on_click(time, button);
+                match (self.paused, down) {
+                    (true, _) => {}
+                    (false, true) => self.on_button_down(time, button),
+                    (false, false) => self.on_button_up(time, button),
                 }
             }
             RawInput::Wheel(amount) if !self.paused => self.on_scroll(time, amount),
@@ -293,13 +306,16 @@ impl<'a> Recorder<'a> {
             }
         }
         self.flush();
-        let mut combo: Vec<Key> = MODIFIERS.iter().copied().filter(|m| self.held.contains(m)).collect();
+        let mut combo = self.held_modifiers();
         combo.push(key);
         self.push(time, time, ActionKind::Combo, Step::Key(combo));
     }
 
-    /// Clique relativo à janela sob o cursor.
-    fn on_click(&mut self, time: Instant, button: Button) {
+    /// Guarda onde o botão desceu, relativo à janela sob o cursor.
+    fn on_button_down(&mut self, time: Instant, button: Button) {
+        if self.press.is_some() {
+            return;
+        }
         self.flush();
         let desktop = self.desktop;
         if desktop.manager().is_none() {
@@ -317,16 +333,32 @@ impl<'a> Recorder<'a> {
         let target = match under {
             Some(window) => {
                 let (class, nth) = class_and_nth(window, &windows);
-                ClickTarget::Window {
-                    class,
-                    nth,
-                    x: x - window.at[0],
-                    y: y - window.at[1],
-                }
+                ClickTarget::Window { class, nth, x: x - window.at[0], y: y - window.at[1] }
             }
             None => ClickTarget::Absolute { x, y },
         };
-        self.push(time, time, ActionKind::Click, Step::Click { button, target });
+        let modifiers = self.held_modifiers();
+        self.press = Some(Press { button, time, screen: (x, y), target, modifiers });
+    }
+
+    /// Botão solto: arrasto se o cursor andou, senão clique (com os modificadores segurados).
+    fn on_button_up(&mut self, time: Instant, button: Button) {
+        let Some(press) = self.press.take_if(|press| press.button == button) else { return };
+        let (x, y) = self.desktop.cursor_pos().unwrap_or(press.screen);
+        let moved = (x - press.screen.0).abs().max((y - press.screen.1).abs()) > DRAG_THRESHOLD;
+        let hold = press.modifiers;
+        if !moved {
+            self.push(press.time, time, ActionKind::Click, Step::Click { button, hold, target: press.target });
+            return;
+        }
+        let (window, from) = match press.target {
+            ClickTarget::Window { class, nth, x, y } => (Some((class, nth)), (x, y)),
+            ClickTarget::Absolute { x, y } => (None, (x, y)),
+        };
+        let to = (from.0 + x - press.screen.0, from.1 + y - press.screen.1);
+        let elapsed = time.saturating_duration_since(press.time).clamp(RECORDED_DRAG_MIN, RECORDED_DRAG_MAX);
+        let step = Step::Drag { button, hold, window, from, to, duration: draft::round_recorded(elapsed) };
+        self.push(press.time, time, ActionKind::Click, step);
     }
 
     fn on_scroll(&mut self, time: Instant, value: i32) {
@@ -335,6 +367,11 @@ impl<'a> Recorder<'a> {
             Some((first, _, total)) => (first, time, total + value),
             None => (time, time, value),
         });
+    }
+
+    /// Modificadores seguros agora, na ordem canônica.
+    fn held_modifiers(&self) -> Vec<Key> {
+        MODIFIERS.iter().copied().filter(|m| self.held.contains(m)).collect()
     }
 
     fn super_held(&self) -> bool {

@@ -12,7 +12,8 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, PostQuitMessage, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WHEEL_DELTA, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WH_MOUSE_LL, WHEEL_DELTA, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL,
+    WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_SYSKEYDOWN,
 };
 
@@ -99,9 +100,12 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let info = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
         if info.flags & LLMHF_INJECTED == 0 {
             let input = match wparam as u32 {
-                WM_LBUTTONDOWN => Some(RawInput::Button(Button::Left)),
-                WM_RBUTTONDOWN => Some(RawInput::Button(Button::Right)),
-                WM_MBUTTONDOWN => Some(RawInput::Button(Button::Middle)),
+                WM_LBUTTONDOWN => Some(RawInput::Button { button: Button::Left, down: true }),
+                WM_LBUTTONUP => Some(RawInput::Button { button: Button::Left, down: false }),
+                WM_RBUTTONDOWN => Some(RawInput::Button { button: Button::Right, down: true }),
+                WM_RBUTTONUP => Some(RawInput::Button { button: Button::Right, down: false }),
+                WM_MBUTTONDOWN => Some(RawInput::Button { button: Button::Middle, down: true }),
+                WM_MBUTTONUP => Some(RawInput::Button { button: Button::Middle, down: false }),
                 WM_MOUSEWHEEL => {
                     let delta = (info.mouseData >> 16) as u16 as i16;
                     Some(RawInput::Wheel(i32::from(delta) / WHEEL_DELTA as i32))

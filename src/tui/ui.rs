@@ -466,7 +466,7 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
         "wait_window" | "wait_layer" | "wait_monitors" | "sleep" => WARN,
         "workspace" => OK,
         "key" | "type" => Color::Magenta,
-        "click" | "scroll" => Color::Blue,
+        "click" | "scroll" | "move" | "drag" | "hold" | "release" => Color::Blue,
         "call" => ACCENT,
         _ => BAD,
     };

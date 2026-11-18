@@ -299,10 +299,13 @@ fn raw_steps(actions: &[Action]) -> Vec<String> {
 /// Pausa perceptível, arredondada para cima.
 fn pause_between(before: Instant, after: Instant) -> Option<Duration> {
     let gap = after.saturating_duration_since(before);
-    (gap >= RECORD_MIN_SLEEP).then(|| {
-        let rounded = gap.as_millis().div_ceil(RECORD_SLEEP_ROUNDING_MS) * RECORD_SLEEP_ROUNDING_MS;
-        Duration::from_millis(rounded as u64)
-    })
+    (gap >= RECORD_MIN_SLEEP).then(|| round_recorded(gap))
+}
+
+/// Arredonda um tempo gravado para cima, no passo das pausas gravadas.
+pub fn round_recorded(duration: Duration) -> Duration {
+    let rounded = duration.as_millis().div_ceil(RECORD_SLEEP_ROUNDING_MS) * RECORD_SLEEP_ROUNDING_MS;
+    Duration::from_millis(rounded as u64)
 }
 
 /// Monta os trechos guardando o fim do anterior para calcular a pausa.

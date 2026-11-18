@@ -33,6 +33,15 @@ pub const VIRTUAL_DEVICE_NAME: &str = "pcue-virtual-input";
 pub const VIRTUAL_DEVICE_SETTLE: Duration = Duration::from_millis(400);
 pub const KEY_STEP_DELAY: Duration = Duration::from_millis(12);
 pub const CLICK_MOVE_SETTLE: Duration = Duration::from_millis(60);
+/// Duração padrão do arrasto do `drag`.
+pub const DEFAULT_DRAG_DURATION: Duration = Duration::from_millis(300);
+/// Intervalo entre os passos do cursor num movimento com duração.
+pub const MOVE_FRAME: Duration = Duration::from_millis(16);
+/// Distância mínima, em pixels, para a gravação tratar um clique como arrasto.
+pub const DRAG_THRESHOLD: i32 = 6;
+/// Faixa da duração gravada de um arrasto.
+pub const RECORDED_DRAG_MIN: Duration = Duration::from_millis(100);
+pub const RECORDED_DRAG_MAX: Duration = Duration::from_secs(3);
 
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);

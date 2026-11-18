@@ -55,7 +55,7 @@ impl Window {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawInput {
     Key { key: Key, down: bool },
-    Button(Button),
+    Button { button: Button, down: bool },
     Wheel(i32),
 }
 
