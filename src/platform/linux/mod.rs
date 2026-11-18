@@ -7,7 +7,7 @@ mod input;
 mod install;
 mod listen;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
-pub use events::event_sources;
+pub use events::{event_sources, watch_devices, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;
@@ -227,6 +227,17 @@ fn proc_cmdline(pid: i64) -> Option<String> {
     (!args.is_empty()).then(|| shell_join(&args))
 }
 
+/// Comando do passo `shell`; em background, num grupo próprio para sobreviver à rotina.
+pub fn shell(command: &str, background: bool) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut shell = Command::new("sh");
+    shell.args(["-c", command]);
+    if background {
+        shell.process_group(0);
+    }
+    shell
+}
+
 /// Abre o comando fora da sessão do terminal, sem depender do compositor.
 pub fn spawn_detached(command: &str) -> Result<()> {
     Command::new("setsid")
@@ -412,6 +423,29 @@ pub fn notify(summary: &str, body: &str) {
         .status();
 }
 
+/// Copia o texto para a área de transferência (wl-copy no Wayland, xclip no X11).
+pub fn copy_text(text: &str) -> Result<()> {
+    let mut command = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        Command::new("wl-copy")
+    } else {
+        let mut xclip = Command::new("xclip");
+        xclip.args(["-selection", "clipboard"]);
+        xclip
+    };
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("{program} não encontrado"))?;
+    child.stdin.take().context("stdin")?.write_all(text.as_bytes())?;
+    if !child.wait()?.success() {
+        bail!("{program} falhou");
+    }
+    Ok(())
+}
+
 /// Literal de string Lua com escapes.
 pub fn lua_str(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -433,22 +467,9 @@ pub fn lua_str(value: &str) -> String {
 /// Junta argumentos numa linha de shell com aspas quando necessário.
 pub fn shell_join<S: AsRef<str>>(args: &[S]) -> String {
     args.iter()
-        .map(|arg| shell_quote(arg.as_ref()))
+        .map(|arg| crate::utils::shell_quote(arg.as_ref()))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Aspas simples POSIX para um argumento.
-fn shell_quote(arg: &str) -> String {
-    let safe = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
-    if safe {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
 }
 
 #[cfg(test)]

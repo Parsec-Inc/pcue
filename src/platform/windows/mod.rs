@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericNamespaced, Name, ToNsName};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
-pub use events::event_sources;
+pub use events::{event_sources, watch_devices, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;
@@ -173,6 +173,18 @@ fn monitor_index(workspace: &Workspace, count: usize) -> Result<usize> {
     Ok(number - 1)
 }
 
+/// Comando do passo `shell`, sem janela de console.
+pub fn shell(command: &str, background: bool) -> Command {
+    let mut shell = Command::new("cmd");
+    shell.raw_arg(format!("/C {command}"));
+    if background {
+        shell.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
+    } else {
+        self::background(&mut shell);
+    }
+    shell
+}
+
 /// Abre o comando sem janela de console.
 pub fn spawn_detached(command: &str) -> Result<()> {
     Command::new("cmd")
@@ -322,6 +334,38 @@ pub fn private_file(path: &Path) -> Result<std::fs::File> {
 
 /// Sem notificações no Windows por enquanto; a falha fica no log e no histórico.
 pub fn notify(_summary: &str, _body: &str) {}
+
+/// Copia o texto para a área de transferência.
+pub fn copy_text(text: &str) -> Result<()> {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    // SAFETY: a memória tem o tamanho de `wide` e só passa a ser do sistema se SetClipboardData der certo.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            bail!("área de transferência ocupada");
+        }
+        EmptyClipboard();
+        let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        let target = GlobalLock(memory) as *mut u16;
+        let copied = !target.is_null();
+        if copied {
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
+            GlobalUnlock(memory);
+        }
+        let set = copied && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+        if !set {
+            GlobalFree(memory);
+        }
+        CloseClipboard();
+        if !set {
+            bail!("não foi possível copiar");
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

@@ -344,7 +344,7 @@ fn draw_summary(frame: &mut Frame, area: Rect, app: &App, routine: &Routine) {
 
 fn trigger_sprite(trigger: &Trigger) -> Sprite {
     match trigger {
-        Trigger::Event { .. } => Sprite::Event,
+        Trigger::Event { .. } | Trigger::Notification { .. } | Trigger::Device { .. } => Sprite::Event,
         Trigger::Daily { .. } => Sprite::Clock,
         Trigger::Interval { .. } => Sprite::Interval,
     }
@@ -391,6 +391,8 @@ fn draw_triggers(frame: &mut Frame, area: Rect, app: &mut App, routine: &Routine
                 Trigger::Event { .. } => "⚡ ",
                 Trigger::Daily { .. } => "◷ ",
                 Trigger::Interval { .. } => "↻ ",
+                Trigger::Notification { .. } => "✉ ",
+                Trigger::Device { .. } => "⏚ ",
             };
             let mut spans = vec![Span::styled(icon, Style::new().fg(WARN)), Span::raw(trigger.to_string())];
             if let Some(next) = describe_next(trigger, &now) {
@@ -636,6 +638,13 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(Paragraph::new(err.as_str()).fg(BAD).wrap(Wrap { trim: true }), error_area);
             }
             draw_buttons(frame, app, buttons, &[("salvar", KeyCode::Enter, true), ("cancelar", KeyCode::Esc, false)]);
+            let copy = " copiar (Ctrl+Y) ";
+            let width = copy.chars().count() as u16;
+            if buttons.width > width {
+                let at = Rect::new(buttons.right() - width, buttons.y, width, 1);
+                frame.buffer_mut().set_stringn(at.x, at.y, copy, width as usize, Style::new().fg(Color::White).bg(SELECTED_BG));
+                app.hits.push((at, Hit::CopyInput));
+            }
         }
         Modal::Confirm { prompt, .. } => {
             let area = popup(app, full, 60, 7);
@@ -936,7 +945,9 @@ fn draw_recording(frame: &mut Frame, app: &mut App) {
     let info_lines = vec![
         Line::raw(""),
         Line::from(match recording.phase {
+            RecPhase::Countdown(_) if recording.phone => "Pegue o celular.",
             RecPhase::Countdown(_) => "Troque para a janela onde vai agir.",
+            RecPhase::Recording if recording.phone => "Toques e botões do celular viram passos.",
             RecPhase::Recording => "Teclado, mouse e janelas viram passos.",
             RecPhase::Paused => "Nada é gravado agora (bom para senhas).",
         }),
@@ -1067,6 +1078,7 @@ const HELP_GENERAL: &[&str] = &[
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
     "  mudanças ficam pendentes até S (ou Ctrl+S) salvar · u descarta · sair com pendências pede confirmação",
+    "  nos campos de texto, Ctrl+Y copia o valor inteiro para a área de transferência",
     "  P parâmetros: {nome} nos passos; ao rodar a TUI pergunta os valores (pcue run rotina nome=valor, call rotina nome=valor)",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];

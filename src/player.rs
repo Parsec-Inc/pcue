@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::config::Config;
-use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME};
+use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME, SHELL_ERROR_LINES, SHELL_POLL, SHELL_STDERR_LIMIT};
 use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
-use crate::platform::{Desktop, VirtualInput};
+use crate::platform::{self, Desktop, VirtualInput};
+use crate::phone;
 use crate::progress::{self, Progress};
 use crate::script::{Arg, ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, Waypoint, WindowRef};
 use crate::keys::Key;
@@ -26,6 +27,8 @@ pub struct Player<'a> {
     stack: Vec<String>,
     /// Teclas e botões apertados por `hold`, soltos no fim da rotina.
     held: Vec<Input>,
+    /// O celular já respondeu ao adb nesta execução.
+    phone_ready: bool,
 }
 
 impl<'a> Player<'a> {
@@ -37,6 +40,7 @@ impl<'a> Player<'a> {
             input: None,
             stack: Vec::new(),
             held: Vec::new(),
+            phone_ready: false,
         }
     }
 
@@ -148,6 +152,14 @@ impl<'a> Player<'a> {
                 })
             }
             Step::Call { routine, args } => self.call(routine, args),
+            Step::Phone(action) => {
+                if !self.phone_ready {
+                    phone::prepare(timeout)?;
+                    self.phone_ready = true;
+                }
+                phone::run(action)
+            }
+            Step::Shell { command, background, timeout, env } => run_shell(command, *background, *timeout, env),
             Step::Hold { input, at } => {
                 if let Some(target) = at {
                     self.point_at(target)?;
@@ -307,6 +319,50 @@ fn position_on(path: &[Waypoint], at: Duration) -> (i32, i32) {
     let k = if span > 0.0 { (at - t0).as_secs_f64() / span } else { 1.0 };
     let lerp = |a: i32, b: i32| a + ((b - a) as f64 * k).round() as i32;
     (lerp(x0, x1), lerp(y0, y1))
+}
+
+/// Roda o comando oculto; sem `background`, espera e falha com o fim do erro.
+fn run_shell(command: &str, background: bool, timeout: Duration, env: &[Arg]) -> Result<()> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let mut shell = platform::shell(command, background);
+    shell.envs(env.iter().map(|(name, value)| (name, value))).stdin(Stdio::null()).stdout(Stdio::null());
+    if background {
+        shell.stderr(Stdio::null()).spawn().context("falha ao iniciar o comando")?;
+        return Ok(());
+    }
+    let mut child = shell.stderr(Stdio::piped()).spawn().context("falha ao iniciar o comando")?;
+    let mut stderr = child.stderr.take().context("sem saída de erro")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut stderr).take(SHELL_STDERR_LIMIT).read_to_end(&mut bytes);
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("o comando passou de {}s", timeout.as_secs());
+        }
+        std::thread::sleep(SHELL_POLL);
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let stderr = reader.join().unwrap_or_default();
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(SHELL_ERROR_LINES)..].join(" | ");
+    match status.code() {
+        Some(code) if tail.is_empty() => bail!("o comando saiu com código {code}"),
+        Some(code) => bail!("o comando saiu com código {code}: {tail}"),
+        None => bail!("o comando foi interrompido"),
+    }
 }
 
 #[cfg(test)]

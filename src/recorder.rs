@@ -14,12 +14,13 @@ use crate::keys::{Key, MODIFIERS, is_modifier, is_shift, is_super, key_to_char};
 use crate::launcher::class_and_nth;
 use crate::platform::{Desktop, RawInput, Window, listen_input};
 use crate::script::{Button, ClickTarget, Step, Waypoint};
+use crate::utils::{Feed, feed};
 
 /// Atalhos da gravação (sempre com SUPER).
-const PAUSE_KEY: Key = Key::F9;
-const STOP_KEY: Key = Key::F10;
+pub const PAUSE_KEY: Key = Key::F9;
+pub const STOP_KEY: Key = Key::F10;
 /// Frequência com que a gravação confere o pedido de parada.
-const STOP_POLL: Duration = Duration::from_millis(100);
+pub const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// O que a gravação reporta enquanto acontece.
 #[derive(Debug, Clone)]
@@ -48,13 +49,14 @@ impl Session {
     }
 }
 
-/// Começa a gravar teclado e mouse até SUPER+F10 ou `Session::stop`.
-pub fn start() -> Session {
+/// Começa a gravar teclado e mouse (ou o celular) até SUPER+F10 ou `Session::stop`.
+pub fn start(phone: bool) -> Session {
     let (sender, events) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
+    let work = if phone { crate::phone::record } else { record };
     std::thread::spawn(move || {
-        let result = record(&sender, &flag);
+        let result = work(&sender, &flag);
         let _ = sender.send(match result {
             Ok(draft) => RecordEvent::Done(draft),
             Err(err) => RecordEvent::Failed(format!("{err:#}")),
@@ -66,12 +68,8 @@ pub fn start() -> Session {
 fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft> {
     let receiver = listen_input()?;
     let desktop = Desktop::connect();
-    for remaining in (1..=RECORD_COUNTDOWN_SECS).rev() {
-        let _ = sender.send(RecordEvent::Countdown(remaining));
-        std::thread::sleep(Duration::from_secs(1));
-        if stop.load(Ordering::Relaxed) {
-            return Ok(Draft::default());
-        }
+    if !countdown(sender, stop) {
+        return Ok(Draft::default());
     }
     let start = Instant::now();
     let _ = sender.send(RecordEvent::Started);
@@ -79,7 +77,7 @@ fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft
     let desktop_events = desktop.manager().map(|_| watch_desktop());
     let mut recorder = Recorder::new(&desktop, sender, Track::start());
     while !stop.load(Ordering::Relaxed) {
-        for event in desktop_events.iter().flat_map(|feed| feed.events.try_iter()) {
+        for event in desktop_events.iter().flat_map(|feed| feed.items.try_iter()) {
             if !recorder.paused {
                 let _ = sender.send(RecordEvent::Desktop(describe_change(&event.change)));
                 recorder.changes.push(event);
@@ -96,10 +94,22 @@ fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft
         }
     }
     if !recorder.paused {
-        recorder.changes.extend(desktop_events.iter().flat_map(|feed| feed.events.try_iter()));
+        recorder.changes.extend(desktop_events.iter().flat_map(|feed| feed.items.try_iter()));
     }
     recorder.flush();
     Ok(draft::build(&recorder.actions, &recorder.changes))
+}
+
+/// Contagem antes de gravar; `false` se a gravação foi parada durante ela.
+pub fn countdown(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> bool {
+    for remaining in (1..=RECORD_COUNTDOWN_SECS).rev() {
+        let _ = sender.send(RecordEvent::Countdown(remaining));
+        std::thread::sleep(Duration::from_secs(1));
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Texto curto da mudança para a tela de gravação.
@@ -111,24 +121,9 @@ fn describe_change(change: &Change) -> String {
     }
 }
 
-/// Mudanças do desktop vindas de uma thread; ela para quando isto é descartado.
-struct DesktopFeed {
-    events: mpsc::Receiver<DesktopEvent>,
-    done: Arc<AtomicBool>,
-}
-
-impl Drop for DesktopFeed {
-    fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
-    }
-}
-
 /// Consulta o desktop numa thread própria a cada aviso de mudança, ou de tempos em tempos.
-fn watch_desktop() -> DesktopFeed {
-    let (sender, events) = mpsc::channel();
-    let done = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&done);
-    std::thread::spawn(move || {
+fn watch_desktop() -> Feed<DesktopEvent> {
+    feed(move |sender, flag| {
         let desktop = Desktop::connect();
         let changes = desktop.watch_changes();
         let mut watcher = Watcher::new(&desktop);
@@ -147,8 +142,7 @@ fn watch_desktop() -> DesktopFeed {
                 }
             }
         }
-    });
-    DesktopFeed { events, done }
+    })
 }
 
 /// Acompanha janelas, foco e workspace consultando o desktop.
@@ -532,7 +526,7 @@ fn whole_ms(duration: Duration) -> Duration {
 }
 
 /// Pontos que mantêm o trajeto, no tempo, a até `tolerance` pixels do gravado.
-fn simplify(trail: &[Waypoint], tolerance: f64) -> Vec<usize> {
+pub fn simplify(trail: &[Waypoint], tolerance: f64) -> Vec<usize> {
     let mut keep = vec![false; trail.len()];
     let mut spans = vec![(0, trail.len().saturating_sub(1))];
     while let Some((a, b)) = spans.pop() {

@@ -7,6 +7,7 @@ mod draft;
 mod history;
 mod keys;
 mod launcher;
+mod phone;
 mod platform;
 mod player;
 mod progress;
@@ -68,8 +69,13 @@ enum Command {
     Emit { event: String },
     /// Lista as rotinas
     List,
-    /// Grava teclado e mouse e acrescenta os passos à rotina
-    Record { routine: String },
+    /// Grava teclado e mouse (ou o celular) e acrescenta os passos à rotina
+    Record {
+        routine: String,
+        /// Grava os toques do celular pelo adb
+        #[arg(long)]
+        phone: bool,
+    },
     /// Gera passos `launch` a partir das janelas abertas agora
     Capture {
         routine: String,
@@ -138,8 +144,8 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Record { routine } => {
-            let steps = record_in_terminal()?;
+        Command::Record { routine, phone } => {
+            let steps = record_in_terminal(phone)?;
             append_steps(&path, &routine, steps)
         }
         Command::Capture {
@@ -192,10 +198,11 @@ fn append_steps(path: &std::path::Path, name: &str, steps: Vec<String>) -> Resul
 }
 
 /// Gravação pela linha de comando, com o progresso impresso.
-fn record_in_terminal() -> Result<Vec<String>> {
+fn record_in_terminal(phone: bool) -> Result<Vec<String>> {
     use recorder::RecordEvent;
-    println!("Troque para onde vai agir. SUPER+F9 pausa/retoma (senhas), SUPER+F10 encerra.");
-    for event in recorder::start().events {
+    let place = if phone { "Pegue o celular" } else { "Troque para onde vai agir" };
+    println!("{place}. SUPER+F9 pausa/retoma (senhas), SUPER+F10 encerra.");
+    for event in recorder::start(phone).events {
         match event {
             RecordEvent::Countdown(n) => println!("  {n}..."),
             RecordEvent::Started => println!("● gravando"),

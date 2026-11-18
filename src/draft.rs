@@ -86,6 +86,11 @@ impl Item {
         Self::new(vec![Variant { label: "gravado", steps: vec![step] }])
     }
 
+    /// Forma sugerida (escolhida) com os passos gravados como alternativa.
+    fn suggested(label: &'static str, step: String, recorded: Vec<String>) -> Self {
+        Self::new(vec![Variant { label, steps: vec![step] }, Variant { label: "gravado", steps: recorded }])
+    }
+
     fn new(variants: Vec<Variant>) -> Self {
         Self {
             variants,
@@ -124,6 +129,33 @@ impl Draft {
             steps.extend(item.current().steps.iter().cloned());
         }
         steps
+    }
+
+    /// Acrescenta um passo gravado com a pausa antes dele.
+    pub fn push_recorded(&mut self, pause: Option<Duration>, step: String) {
+        self.items.push(Item { pause, ..Item::recorded(step) });
+    }
+
+    /// Acrescenta um passo com uma forma sugerida (escolhida) e a gravada como alternativa.
+    pub fn push_choice(&mut self, pause: Option<Duration>, label: &'static str, suggested: String, recorded: String) {
+        self.items.push(Item { pause, ..Item::suggested(label, suggested, vec![recorded]) });
+    }
+
+    /// Junta os trechos `from..to` num só: `step` como forma escolhida e o gravado como alternativa.
+    pub fn group(&mut self, from: usize, to: usize, label: &'static str, step: String) {
+        if from >= to || to > self.items.len() {
+            return;
+        }
+        let parts: Vec<Item> = self.items.drain(from..to).collect();
+        let recorded = Draft { items: parts.clone() }.render();
+        let recorded = match parts[0].pause.filter(|_| parts[0].keep_pause) {
+            Some(_) => recorded[1..].to_vec(),
+            None => recorded,
+        };
+        let mut item = Item::suggested(label, step, recorded);
+        item.pause = parts[0].pause;
+        item.keep_pause = parts[0].keep_pause;
+        self.items.insert(from, item);
     }
 
     /// Quantos trechos têm mais de uma forma.

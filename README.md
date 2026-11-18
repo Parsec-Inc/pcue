@@ -55,7 +55,7 @@ acompanhamento ao vivo das execuções.
 | ⏺️ **Gravação inteligente** | percebe app abrindo, foco e troca de workspace: grava `launch`, `focus` e `workspace` em vez das teclas, e você revisa cada trecho antes de salvar |
 | 🖱️ **Cliques relativos** | cliques ficam relativos à janela, mesmo com várias janelas da mesma class |
 | 🔒 **Senhas fora da gravação** | `SUPER+F9` pausa e retoma, `SUPER+F10` encerra |
-| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, horário diário e intervalo |
+| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, notificação de app (Linux), dispositivo USB conectado ou desconectado, horário diário e intervalo |
 | 🪟 **Linux e Windows** | mesma config e mesma TUI; no Windows `workspace=N` é o monitor N |
 | 🧠 **Passos espertos** | `optional`, `repeat=N`, `if_window=`, `unless_window=` e `call outra_rotina` |
 | 🐞 **Depuração** | rodar só um passo, rodar a partir de um passo, acompanhar e interromper execuções |
@@ -165,6 +165,7 @@ salvo.
 
 | Onde | Teclas |
 |---|---|
+| Campos de texto | `Ctrl+Y` (ou o botão copiar) copia o valor inteiro para a área de transferência · `Ctrl+A`/`Ctrl+E` início/fim · `Ctrl+U` apaga até o cursor |
 | Geral | `S`/`Ctrl+S` salva · `u` descarta as alterações · `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
@@ -196,7 +197,27 @@ move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
 release SUPER
 scroll -3
 call outra_rotina [parâmetro=valor]
+shell "comando" [background] [timeout=5m]
+phone tap X,Y [duration=800ms]  # celular: toque (com duration, toque longo)
+phone tap text=REGEX [id=REGEX] [timeout=30s]   # toca no elemento pelo texto
+phone wait text=REGEX [id=REGEX] [timeout=30s]  # espera o elemento aparecer
+phone swipe from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]
+phone open br.com.brainweb.ifood [timeout=30s]   # abre o app e espera ele aparecer
+phone key BACK                  # HOME, APP_SWITCH, ENTER, WAKEUP, VOLUME_UP...
+phone text "texto"
 # comentário
+```
+
+`shell` roda o comando sem janela (`sh -c` no Linux, `cmd /C` no Windows).
+Por padrão espera ele terminar, até o `timeout` (5 min): código de saída
+diferente de zero falha o passo, com as últimas linhas do erro na mensagem.
+Com `background` ele segue rodando sozinho, mesmo depois que a rotina acaba.
+Os parâmetros da rotina chegam como variáveis de ambiente (`-` vira `_`), e
+não por `{nome}`, para um valor como `; rm -rf ~` nunca virar comando:
+
+```text
+shell "adb pull /sdcard/DCIM ~/Fotos/celular" timeout=30m
+shell "echo \"$titulo: $texto\" >> ~/mensagens.txt"
 ```
 
 Qualquer passo aceita modificadores:
@@ -228,7 +249,96 @@ Ao rodar pela TUI, ela pergunta cada valor (lembrando o último usado). Fora
 dela: `pcue run teams-msg pessoa=erick` (bom para um atalho do Hyprland) ou,
 dentro de outra rotina, `call teams-msg pessoa=erick`. Parâmetros sem padrão
 são obrigatórios; rotina agendada precisa de padrão em todos, porque o daemon
-roda sem perguntar.
+roda sem perguntar (exceto os que o gatilho preenche, como os da
+notificação).
+
+### Gatilho por notificação
+
+No Linux, uma rotina pode disparar quando um app notifica, por exemplo ao
+chegar mensagem no Teams. Em `a` (gatilho) escolha **notificação** e informe
+os filtros: `app=teams, titulo=erick, texto=urgente`. Cada filtro é uma regex
+sem diferenciar maiúsculas, e filtro vazio aceita tudo. `Ctrl+G` no campo
+captura a próxima notificação que chegar e preenche app e título.
+
+| Filtro | O que é | No Teams |
+|---|---|---|
+| `app` | nome do app ou o `desktop-entry` do flatpak | `com.github.IsmaelMartinez.teams_for_linux` |
+| `titulo` | título da notificação | quem mandou (ou o nome do grupo) |
+| `texto` | corpo da notificação | a mensagem |
+
+A rotina recebe os valores nos parâmetros `app`, `titulo` e `texto`, se os
+declarar (com `P`). Eles não precisam de padrão, porque o gatilho os preenche:
+
+```toml
+[[routine]]
+name = "responde-erick"
+params = [{ name = "titulo" }]
+triggers = [{ type = "notification", app = "teams", title = "erick" }]
+steps = ["focus class=teams", "key CTRL+ALT+E", "type {titulo}", "key RETURN", "type \"já vejo!\"", "key RETURN"]
+```
+
+O daemon lê as notificações pelo D-Bus da sessão e não grava o conteúdo no
+log. Notificações do próprio pcue são ignoradas, e a mesma notificação
+repetida em menos de 2 s dispara uma vez só. Se o Teams estiver configurado
+para esconder a prévia da mensagem, `texto` chega vazio.
+
+### Celular (adb)
+
+Os passos `phone` controlam um Android pelo `adb` (pacote `android-tools`),
+com a **Depuração USB** ligada nas Opções do desenvolvedor do celular. As
+posições são pixels da tela dele, na vertical. O primeiro passo `phone` de
+cada execução espera o celular aparecer no adb, até o timeout da config, e
+acende a tela se ela estiver apagada (a gravação também). Com bloqueio por
+padrão, grave o desenho logo depois.
+
+Para gravar, use `R` → **celular** na TUI (ou `pcue record --phone ROTINA`) e
+mexa no celular: toque vira `phone tap`, toque parado por meio segundo vira
+toque longo, arrasto vira `phone swipe` com o caminho inteiro em `via` (dá
+para gravar o padrão de desbloqueio sem tirar o dedo), e os botões físicos (voltar, home,
+volume, power) viram `phone key`, com as pausas entre eles. `SUPER+F9` pausa
+e `SUPER+F10` encerra, no teclado do PC. A revisão sempre abre no fim: troque
+a sequência de toques no teclado virtual por um `phone text "..."` (com `e`
+num trecho). `phone text` só digita ASCII; acentos não passam pelo adb.
+
+`phone wait` e `phone tap text=` leem a tela pelo `uiautomator` (cerca de 3 s
+por leitura) até achar um elemento cujo texto ou descrição case com `text=`
+(regex sem diferenciar maiúsculas) e cujo id case com `id=`. Servem para
+esperar o app terminar de carregar e para tocar num botão onde quer que ele
+esteja. Telas protegidas (senha, alguns bancos e jogos) não são lidas.
+
+Durante a gravação a tela é lida sem parar: um toque num elemento com texto,
+descrição ou id que o identifica sozinho vira `phone tap text=...`, com a
+posição como alternativa na revisão. Toques muito seguidos (antes de dar
+tempo de ler a tela) ficam pela posição.
+
+Quando um app abre a partir da tela inicial, os toques feitos nela até ali
+viram um único `phone open PACOTE` (a forma gravada fica como alternativa na
+revisão, com `←`/`→`). O padrão de desbloqueio gravado fica em texto puro na
+config: quem ler o arquivo consegue desbloquear o celular.
+
+Só o primeiro dedo é gravado (pinça vira um arrasto), e a tela é tratada na
+vertical. Os toques são repetidos nas mesmas posições, então um app que mudou
+de layout ou a tela girada fazem a rotina errar, como os cliques no PC.
+
+### Gatilho por dispositivo
+
+Dispara quando um dispositivo USB é conectado (ou desconectado), como um
+celular ou um pendrive. Em `a` escolha **dispositivo conectado** ou
+**dispositivo desconectado** e informe uma regex do nome ou do id
+`fabricante:produto` (`pixel`, `18d1:4ee7`); vazio aceita qualquer um, e
+`Ctrl+G` captura o próximo que você plugar. Hubs USB ficam de fora.
+
+```toml
+[[routine]]
+name = "backup-celular"
+params = [{ name = "dispositivo" }]
+triggers = [{ type = "device", name = "pixel" }]   # removed = true: ao desconectar
+steps = ["shell \"adb wait-for-device && adb pull /sdcard/DCIM ~/Fotos\" timeout=30m"]
+```
+
+A rotina recebe `dispositivo` (fabricante e produto) e `id`. No Linux o
+daemon lê os eventos do kernel; no Windows o nome não vem, então
+`dispositivo` é o próprio id, e a captura com `Ctrl+G` ainda não funciona.
 
 `focus` espera a janela existir e foca nela, trocando de workspace se
 precisar. É mais robusto que `key SUPER+N`, que depende de onde o foco está.

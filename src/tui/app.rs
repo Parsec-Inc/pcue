@@ -19,8 +19,8 @@ use crate::recorder::{self, RecordEvent};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
 use crate::script::{Arg, SYNTAX, is_comment, parse_line};
-use crate::utils::{expand_home, log_path, runtime_dir};
-use crate::platform::{self as install, Desktop};
+use crate::utils::{expand_home, in_background, log_path, runtime_dir};
+use crate::platform::{self as install, Desktop, Event};
 use crate::update::{self, Release, UpdateEvent};
 use crate::{boot, capture, daemon};
 
@@ -60,6 +60,7 @@ pub enum Hit {
     ReviewRow(usize),
     Backdrop,
     StopRecording,
+    CopyInput,
 }
 
 /// Janela sobreposta ativa.
@@ -109,6 +110,8 @@ pub enum InputPurpose {
     Daily(Option<usize>),
     Interval(Option<usize>),
     CustomEvent(Option<usize>),
+    Notification(Option<usize>),
+    Device { editing: Option<usize>, removed: bool },
     Export,
     Import,
     Params,
@@ -120,6 +123,7 @@ pub enum InputPurpose {
 #[derive(Clone, Copy)]
 pub enum PickPurpose {
     TriggerKind(Option<usize>),
+    RecordTarget,
     Event(Option<usize>),
 }
 
@@ -162,6 +166,8 @@ pub enum RecPhase {
 pub struct Recording {
     session: recorder::Session,
     pub routine: String,
+    /// Grava o celular pelo adb em vez do PC.
+    pub phone: bool,
     pub phase: RecPhase,
     pub steps: Vec<String>,
     /// Ações gravadas (sem contar as mudanças do desktop).
@@ -217,6 +223,8 @@ pub struct App {
     /// Release mais nova que a atual, se houver.
     pub update: Option<Release>,
     updates: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
+    /// Próxima notificação sendo capturada para o filtro do gatilho.
+    capture: Option<std::sync::mpsc::Receiver<Result<Event>>>,
     pub filter: Option<Filter>,
     pub recording: Option<Recording>,
     pub slides: Slides,
@@ -262,6 +270,7 @@ impl App {
             manager: install::manager_name(),
             update: None,
             updates: Some(update::check_in_background()),
+            capture: None,
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -343,6 +352,7 @@ impl App {
     pub fn refresh(&mut self) {
         self.poll_recording();
         self.poll_update();
+        self.poll_capture();
         if self.last_progress.elapsed() >= PROGRESS_EVERY {
             self.last_progress = Instant::now();
             self.running = progress::running();
@@ -645,7 +655,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('a') => self.open_input("Novo passo", &step_hint(), "", InputPurpose::AddStep),
-            KeyCode::Char('R') => self.start_recording(),
+            KeyCode::Char('R') => self.pick_record_target(),
             KeyCode::Char('c') => self.capture_windows(),
             KeyCode::Char('E') => self.open_editor = true,
             _ if count == 0 => {}
@@ -725,6 +735,7 @@ impl App {
 
     fn on_hit(&mut self, hit: Hit, double: bool) {
         match hit {
+            Hit::CopyInput => self.copy_input(),
             Hit::StopRecording => {
                 if let Some(recording) = &self.recording {
                     recording.session.stop();
@@ -809,6 +820,9 @@ impl App {
                 ("evento".into(), "login, bloqueio, desbloqueio, suspensão, monitor...".into()),
                 ("diário".into(), "num horário, todos os dias ou em dias escolhidos".into()),
                 ("intervalo".into(), "a cada N minutos ou horas".into()),
+                ("notificação".into(), "quando um app notifica (Teams, WhatsApp...)".into()),
+                ("dispositivo conectado".into(), "celular, pendrive... via USB".into()),
+                ("dispositivo desconectado".into(), "ao tirar um dispositivo USB".into()),
             ],
             selected: 0,
             purpose: PickPurpose::TriggerKind(editing),
@@ -854,6 +868,8 @@ impl App {
                 &every,
                 InputPurpose::Interval(Some(index)),
             ),
+            Trigger::Notification { .. } => self.open_notification_input(Some(index), &trigger.notification_input()),
+            Trigger::Device { name, removed } => self.open_device_input(Some(index), removed, &name),
         }
     }
 
@@ -987,6 +1003,14 @@ impl App {
                 ..
             } => match key.code {
                 KeyCode::Esc => self.modal = self.stashed_review.take(),
+                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => self.copy_input(),
+                KeyCode::Char('g')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(purpose, InputPurpose::Notification(_) | InputPurpose::Device { .. }) =>
+                {
+                    let devices = matches!(purpose, InputPurpose::Device { .. });
+                    self.capture_next(devices);
+                }
                 KeyCode::Enter => {
                     let (purpose, value) = (*purpose, input.value().trim().to_string());
                     let opened = self.modal_at;
@@ -1009,6 +1033,15 @@ impl App {
                     }
                 }
             },
+        }
+    }
+
+    /// Copia o texto do campo aberto para a área de transferência.
+    fn copy_input(&mut self) {
+        let Some(Modal::Input { input, .. }) = &self.modal else { return };
+        match crate::platform::copy_text(input.value()) {
+            Ok(()) => self.info("copiado para a área de transferência"),
+            Err(err) => self.error(format!("não copiou: {err:#}")),
         }
     }
 
@@ -1063,6 +1096,12 @@ impl App {
                     },
                 )?;
             }
+            InputPurpose::Notification(editing) => self.save_trigger(editing, Trigger::parse_notification(value)?)?,
+            InputPurpose::Device { editing, removed } => {
+                let trigger = Trigger::Device { name: value.to_string(), removed };
+                trigger.validate()?;
+                self.save_trigger(editing, trigger)?;
+            }
             InputPurpose::Params => {
                 let params = parse_params(value);
                 self.mutate_routine(|r| r.params = params)?;
@@ -1115,10 +1154,14 @@ impl App {
 
     fn apply_pick(&mut self, purpose: PickPurpose, index: usize, choice: &str) {
         match purpose {
+            PickPurpose::RecordTarget => self.start_recording(index == 1),
             PickPurpose::TriggerKind(editing) => match index {
                 0 => self.pick_event(editing),
                 1 => self.open_input("Horário diário", DAILY_HINT, "", InputPurpose::Daily(editing)),
-                _ => self.open_input("Intervalo", INTERVAL_HINT, "", InputPurpose::Interval(editing)),
+                2 => self.open_input("Intervalo", INTERVAL_HINT, "", InputPurpose::Interval(editing)),
+                3 => self.open_notification_input(editing, ""),
+                4 => self.open_device_input(editing, false, ""),
+                _ => self.open_device_input(editing, true, ""),
             },
             PickPurpose::Event(editing) if index >= BUILTIN_EVENTS.len() => self.open_input(
                 "Evento personalizado",
@@ -1253,6 +1296,64 @@ impl App {
             }
             UpdateEvent::Failed(err) => self.error(format!("atualização falhou: {err}")),
         }
+    }
+
+    fn open_notification_input(&mut self, editing: Option<usize>, value: &str) {
+        self.open_input("Notificação", NOTIFICATION_HINT, value, InputPurpose::Notification(editing));
+    }
+
+    fn open_device_input(&mut self, editing: Option<usize>, removed: bool, value: &str) {
+        let title = if removed { "Dispositivo desconectado" } else { "Dispositivo conectado" };
+        self.open_input(title, DEVICE_HINT, value, InputPurpose::Device { editing, removed });
+    }
+
+    /// Escuta o próximo dispositivo ou notificação em segundo plano para preencher o filtro.
+    fn capture_next(&mut self, devices: bool) {
+        if self.capture.is_some() {
+            return;
+        }
+        self.capture = Some(in_background(move || {
+            let mut caught = None;
+            let watched = if devices {
+                install::watch_devices(|device| {
+                    caught = Some(Event::Device(device));
+                    false
+                })
+            } else {
+                install::watch_notifications(|notification| {
+                    caught = Some(Event::Notification(notification));
+                    false
+                })
+            };
+            Some(watched.and_then(|()| caught.context("o monitor parou")))
+        }));
+        self.info(if devices { "conecte o dispositivo…" } else { "aguardando a próxima notificação…" });
+    }
+
+    /// Preenche o filtro com o que foi capturado.
+    fn poll_capture(&mut self) {
+        let Some(result) = self.capture.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.capture = None;
+        let event = match result {
+            Ok(event) => event,
+            Err(err) => return self.error(format!("captura falhou: {err:#}")),
+        };
+        let Some(Modal::Input { input, error, .. }) = &mut self.modal else { return };
+        let (value, label) = match event {
+            Event::Notification(notification) => {
+                let filter = Trigger::Notification {
+                    app: regex::escape(&notification.app),
+                    title: regex::escape(&notification.title),
+                    body: String::new(),
+                };
+                (filter.notification_input(), format!("notificação de {} capturada", notification.app))
+            }
+            Event::Device(device) => (regex::escape(&device.name), format!("{} ({}) capturado", device.name, device.id)),
+            Event::Named(_) => return,
+        };
+        *input = TextInput::with_value(&value);
+        *error = None;
+        self.info(label);
     }
 
     fn toggle_enabled(&mut self) {
@@ -1422,11 +1523,27 @@ impl App {
         self.open_modal(Modal::Log { lines, scroll });
     }
 
-    fn start_recording(&mut self) {
+    fn pick_record_target(&mut self) {
+        if self.routine().is_none() {
+            return;
+        }
+        self.open_modal(Modal::Pick {
+            title: "Gravar".into(),
+            options: vec![
+                ("PC".into(), "teclado, mouse e janelas".into()),
+                ("celular".into(), "toques e botões do Android, pelo adb".into()),
+            ],
+            selected: 0,
+            purpose: PickPurpose::RecordTarget,
+        });
+    }
+
+    fn start_recording(&mut self, phone: bool) {
         let Some(routine) = self.routine().map(|r| r.name.clone()) else { return };
         self.recording = Some(Recording {
-            session: recorder::start(),
+            session: recorder::start(phone),
             routine,
+            phone,
             phase: RecPhase::Countdown(crate::constants::RECORD_COUNTDOWN_SECS),
             steps: Vec::new(),
             actions: 0,
@@ -1464,10 +1581,10 @@ impl App {
             }
         };
         let Some(outcome) = outcome else { return };
-        let routine = recording.routine.clone();
+        let (routine, phone) = (recording.routine.clone(), recording.phone);
         self.recording = None;
         match outcome {
-            Ok(draft) if draft.choices() > 0 => {
+            Ok(draft) if draft.choices() > 0 || (phone && !draft.items.is_empty()) => {
                 self.open_modal(Modal::Review {
                     routine,
                     draft,
@@ -1605,4 +1722,7 @@ fn moved(index: usize, len: usize, key: KeyCode) -> Option<usize> {
 const DAILY_HINT: &str = "HH:MM e dias opcionais, ex.: 09:00 seg,ter,qua,qui,sex";
 const PARAMS_HINT: &str =
     "nomes separados por vírgula, padrão opcional: pessoa, mensagem=oi · nos passos: {pessoa} · fora: pcue run rotina pessoa=erick";
+const NOTIFICATION_HINT: &str =
+    "app=teams, titulo=Erick, texto=... (regex, vazio aceita tudo) · Ctrl+G captura a próxima";
+const DEVICE_HINT: &str = "nome ou id (regex, ex.: pixel ou 18d1:4ee7; vazio = qualquer) · Ctrl+G captura o próximo";
 const INTERVAL_HINT: &str = "ex.: 30m, 2h ou 1.5h (mínimo 1m)";

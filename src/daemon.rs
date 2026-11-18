@@ -10,12 +10,12 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{Listener, ListenerOptions, Stream};
 use jiff::Zoned;
 
-use crate::config::{Config, Trigger, validate_name};
+use crate::config::{Config, Trigger, event_args, event_label, validate_name};
 use crate::constants::{DAEMON_HANDOFF, DAEMON_TICK, EVENT_DEDUP_WINDOW, NEXT_RUNS_FILE};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::{Weekday, next_daily};
-use crate::script::parse_duration;
-use crate::platform::{self, daemon_endpoint};
+use crate::script::{Arg, parse_duration};
+use crate::platform::{self, Event, daemon_endpoint};
 use crate::utils::{config_path, log, read_json, runtime_dir, write_atomic};
 
 /// Processo de fundo: dispara rotinas por evento e horário.
@@ -49,12 +49,12 @@ pub fn run_daemon(restarted: bool) -> Result<()> {
     } else {
         log("daemon iniciado");
         std::thread::sleep(Duration::from_millis(daemon.config.settings.startup_delay_ms));
-        daemon.fire_event("login");
+        daemon.fire(Event::Named("login".into()));
     }
 
     loop {
         match receiver.recv_timeout(DAEMON_TICK) {
-            Ok(name) => daemon.fire_event(&name),
+            Ok(event) => daemon.fire(event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => bail!("todas as fontes de evento pararam"),
         }
@@ -142,7 +142,7 @@ impl Due {
                     every,
                 })
             }
-            Trigger::Event { .. } => None,
+            Trigger::Event { .. } | Trigger::Notification { .. } | Trigger::Device { .. } => None,
         }
     }
 
@@ -202,7 +202,7 @@ struct Daemon {
     config: Config,
     modified: Option<SystemTime>,
     schedule: Vec<(String, Due)>,
-    last_event: HashMap<String, Instant>,
+    last_event: HashMap<Event, Instant>,
     children: Vec<Child>,
 }
 
@@ -272,27 +272,25 @@ impl Daemon {
         }
     }
 
-    /// Dispara rotinas do evento, ignorando repetições próximas.
-    fn fire_event(&mut self, event: &str) {
+    /// Dispara as rotinas cujo gatilho aceita o evento, ignorando repetições próximas.
+    fn fire(&mut self, event: Event) {
         let now = Instant::now();
-        if self
-            .last_event
-            .get(event)
-            .is_some_and(|t| now.duration_since(*t) < EVENT_DEDUP_WINDOW)
-        {
+        self.last_event.retain(|_, t| now.duration_since(*t) < EVENT_DEDUP_WINDOW);
+        if self.last_event.insert(event.clone(), now).is_some() {
             return;
         }
-        self.last_event.insert(event.to_string(), now);
-        log(&format!("evento {event}"));
-        let names: Vec<String> = self
+        let label = event_label(&event);
+        log(&label);
+        let args = event_args(&event);
+        let runs: Vec<(String, Vec<Arg>)> = self
             .config
             .routines
             .iter()
-            .filter(|r| r.listens_to(event))
-            .map(|r| r.name.clone())
+            .filter(|r| r.enabled && r.triggers.iter().any(|t| t.catches(&event)))
+            .map(|r| (r.name.clone(), args.iter().filter(|(name, _)| r.has_param(name)).cloned().collect()))
             .collect();
-        for name in names {
-            self.spawn(&name, &format!("evento {event}"));
+        for (name, args) in runs {
+            self.spawn(&name, &label, &args);
         }
     }
 
@@ -312,13 +310,13 @@ impl Daemon {
             self.publish_next();
         }
         for (name, label) in fired {
-            self.spawn(&name, label);
+            self.spawn(&name, label, &[]);
         }
     }
 
     /// Roda a rotina num processo filho.
-    fn spawn(&mut self, routine: &str, trigger: &str) {
-        match spawn_run(routine, trigger, 0, Selection::All, &[]) {
+    fn spawn(&mut self, routine: &str, trigger: &str, args: &[Arg]) {
+        match spawn_run(routine, trigger, 0, Selection::All, args) {
             Ok(child) => self.children.push(child),
             Err(err) => log(&format!("[{routine}] falha ao iniciar: {err}")),
         }
@@ -336,9 +334,9 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 /// Roda um observador em thread própria, registrando a falha no log.
-fn spawn_watcher<F>(name: &str, sender: Sender<String>, watcher: F)
+fn spawn_watcher<F>(name: &str, sender: Sender<Event>, watcher: F)
 where
-    F: FnOnce(Sender<String>) -> Result<()> + Send + 'static,
+    F: FnOnce(Sender<Event>) -> Result<()> + Send + 'static,
 {
     let name = name.to_string();
     std::thread::spawn(move || {
@@ -349,7 +347,7 @@ where
 }
 
 /// Atende `emit <evento>` e `ping` no socket.
-fn serve_ipc(listener: Listener, sender: Sender<String>) -> Result<()> {
+fn serve_ipc(listener: Listener, sender: Sender<Event>) -> Result<()> {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let mut reader = BufReader::new(stream);
@@ -359,7 +357,7 @@ fn serve_ipc(listener: Listener, sender: Sender<String>) -> Result<()> {
         }
         let reply = match line.trim().split_once(' ') {
             Some(("emit", event)) if validate_name(event).is_ok() => {
-                sender.send(event.to_string())?;
+                sender.send(Event::Named(event.to_string()))?;
                 "ok".to_string()
             }
             _ if line.trim() == "ping" => "ok".to_string(),

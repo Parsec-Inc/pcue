@@ -1,11 +1,51 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 use anyhow::{Context, Result};
 
 use crate::constants::{CONFIG_FILE, HISTORY_FILE, LOG_FILE};
 use crate::platform;
+
+/// Roda `work` numa thread; o resultado, se houver, chega pelo canal.
+pub fn in_background<T: Send + 'static>(work: impl FnOnce() -> Option<T> + Send + 'static) -> std::sync::mpsc::Receiver<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(value) = work() {
+            let _ = sender.send(value);
+        }
+    });
+    receiver
+}
+
+/// Itens produzidos numa thread; ela para quando isto é descartado.
+pub struct Feed<T> {
+    pub items: mpsc::Receiver<T>,
+    done: Arc<AtomicBool>,
+}
+
+impl<T> Drop for Feed<T> {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Roda `work` numa thread com o canal da feed e o aviso de parada.
+pub fn feed<T: Send + 'static>(work: impl FnOnce(mpsc::Sender<T>, Arc<AtomicBool>) + Send + 'static) -> Feed<T> {
+    let (sender, items) = mpsc::channel();
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&done);
+    std::thread::spawn(move || work(sender, flag));
+    Feed { items, done }
+}
+
+/// Aspas simples POSIX para um argumento (sem aspas se não precisar).
+pub fn shell_quote(arg: &str) -> String {
+    let safe = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if safe { arg.to_string() } else { format!("'{}'", arg.replace('\'', r"'\''")) }
+}
 
 pub use crate::platform::{notify, runtime_dir};
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::config::Workspace;
-use crate::constants::{DEFAULT_DRAG_DURATION, DEFAULT_WAIT_TIMEOUT};
+use crate::constants::{DEFAULT_DRAG_DURATION, DEFAULT_PHONE_SWIPE, DEFAULT_SHELL_TIMEOUT, DEFAULT_WAIT_TIMEOUT};
 use crate::keys::{Key, combo_name, key_name, parse_combo, parse_key};
 
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
@@ -20,11 +20,65 @@ pub const SYNTAX: &[&str] = &[
     "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]",
     "hold SUPER | mouse_right [X,Y]   release SUPER | mouse_right   move X,Y [duration=300ms]",
     "call outra_rotina [parâmetro=valor]      # comentário",
+    "phone tap X,Y|text=REGEX [duration=800ms] · phone swipe from=X,Y [via=...] to=X,Y · phone key BACK · phone text \"oi\"",
+    "phone open PACOTE · phone wait text=REGEX|id=REGEX [timeout=30s]   (celular pelo adb)",
+    "shell \"comando\" [background] [timeout=5m]   roda oculto; parâmetros viram variáveis (\"$pessoa\")",
     "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
 ];
 
 /// Profundidade máxima de `call` aninhado.
 pub const MAX_CALL_DEPTH: usize = 8;
+
+/// Elemento da tela do celular: regex do texto (ou descrição) e/ou do id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiTarget {
+    pub text: Option<String>,
+    pub id: Option<String>,
+}
+
+impl UiTarget {
+    /// `text=` e `id=` das opções; `None` se nenhum dos dois veio.
+    fn take(options: &mut Options) -> Result<Option<Self>> {
+        let target = Self { text: options.take("text"), id: options.take("id") };
+        if target.text.is_none() && target.id.is_none() {
+            return Ok(None);
+        }
+        for filter in target.text.iter().chain(&target.id) {
+            crate::config::filter_regex(filter).with_context(|| format!("regex inválida: {filter}"))?;
+        }
+        Ok(Some(target))
+    }
+}
+
+impl fmt::Display for UiTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts = [("text", &self.text), ("id", &self.id)];
+        let mut first = true;
+        for (key, value) in parts.iter().filter_map(|(k, v)| v.as_ref().map(|v| (k, v))) {
+            write!(f, "{}{key}={}", if first { "" } else { " " }, quote(value))?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Ação no celular; posições em pixels da tela dele.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PhoneAction {
+    /// Toque; com `hold`, toque longo.
+    Tap { at: (i32, i32), hold: Duration },
+    /// Toque no elemento da tela achado pelo texto ou id, esperando ele aparecer.
+    TapOn { target: UiTarget, hold: Duration, timeout: Duration },
+    /// Espera um elemento aparecer na tela.
+    Wait { target: UiTarget, timeout: Duration },
+    /// Arrasto; `via` guarda o caminho (ex. desenho do desbloqueio).
+    Swipe { from: (i32, i32), via: Vec<Waypoint>, to: (i32, i32), duration: Duration },
+    /// Abre o app pelo pacote e espera ele ficar em primeiro plano.
+    Open { package: String, timeout: Duration },
+    /// Nome do KEYCODE sem o prefixo, ex. `BACK`.
+    Key(String),
+    Text(String),
+}
 
 /// Um passo do script pós-boot.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +119,15 @@ pub enum Step {
     Scroll(i32),
     /// Roda outra rotina com os valores dos parâmetros dela.
     Call { routine: String, args: Vec<Arg> },
+    /// Toque, arrasto, botão ou texto no celular, pelo adb.
+    Phone(PhoneAction),
+    /// Comando sem janela; os parâmetros vão como variáveis de ambiente.
+    Shell {
+        command: String,
+        background: bool,
+        timeout: Duration,
+        env: Vec<Arg>,
+    },
     /// Aperta e mantém até um `release` ou o fim da rotina.
     Hold {
         input: Input,
@@ -205,7 +268,14 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
 /// Interpreta um passo trocando `{nome}` pelos valores; um valor nunca vira opção.
 pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
     let mut tokens = tokenize(line)?;
+    let shell = tokens.first().is_some_and(|t| t.text == "shell");
     for token in tokens.iter_mut().skip(1) {
+        if shell && !token.text.split_once('=').is_some_and(|(key, _)| is_option_name(key)) {
+            if let Some((name, _)) = args.iter().find(|(name, _)| token.text.contains(&format!("{{{name}}}"))) {
+                bail!("no shell use \"${}\" em vez de {{{name}}}", env_name(name));
+            }
+            continue;
+        }
         let expanded = expand(&token.text, args);
         if expanded != token.text {
             if let Some((key, value)) = token.text.split_once('=').filter(|(key, _)| is_option_name(key)) {
@@ -216,6 +286,7 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
             }
         }
     }
+    let params = args;
     let (verb, args) = tokens.split_first().ok_or_else(|| anyhow!("linha vazia"))?;
     let mut options = Options::new(args);
     let guard = Guard {
@@ -267,6 +338,13 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
             crate::config::validate_name(&routine)?;
             Step::Call { routine, args: options.drain_named() }
         }
+        "phone" => Step::Phone(parse_phone(&mut options)?),
+        "shell" => Step::Shell {
+            command: options.positional("comando")?,
+            background: options.flag("background"),
+            timeout: parse_optional_duration(&mut options, "timeout", DEFAULT_SHELL_TIMEOUT)?,
+            env: params.iter().map(|(name, value)| (env_name(name), value.clone())).collect(),
+        },
         "scroll" => Step::Scroll(
             options
                 .positional("quantidade")?
@@ -277,6 +355,55 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
     };
     options.finish()?;
     Ok(Instruction { step, guard })
+}
+
+/// `phone tap|swipe|key|text ...`.
+fn parse_phone(options: &mut Options) -> Result<PhoneAction> {
+    Ok(match options.positional("ação do celular (tap, swipe, key, text, open, wait)")?.as_str() {
+        "tap" => match UiTarget::take(options)? {
+            Some(target) => PhoneAction::TapOn {
+                target,
+                hold: parse_optional_duration(options, "duration", Duration::ZERO)?,
+                timeout: parse_timeout(options)?,
+            },
+            None => PhoneAction::Tap {
+                at: parse_point(&options.positional("posição X,Y ou text=")?)?,
+                hold: parse_optional_duration(options, "duration", Duration::ZERO)?,
+            },
+        },
+        "wait" => PhoneAction::Wait {
+            target: UiTarget::take(options)?.context("phone wait precisa de text= ou id=")?,
+            timeout: parse_timeout(options)?,
+        },
+        "swipe" => PhoneAction::Swipe {
+            from: parse_point(&options.required("from")?)?,
+            via: options.take("via").map_or(Ok(Vec::new()), |raw| parse_via(&raw))?,
+            to: parse_point(&options.required("to")?)?,
+            duration: parse_optional_duration(options, "duration", DEFAULT_PHONE_SWIPE)?,
+        },
+        "open" => {
+            let package = options.positional("pacote do app (ex. br.com.brainweb.ifood)")?;
+            if !package.contains('.') || !package.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') {
+                bail!("pacote inválido: {package}");
+            }
+            PhoneAction::Open { package, timeout: parse_timeout(options)? }
+        }
+        "key" => {
+            let raw = options.positional("tecla (BACK, HOME, ENTER...)")?.to_ascii_uppercase();
+            let name = raw.strip_prefix("KEYCODE_").unwrap_or(&raw).to_string();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                bail!("tecla do celular inválida: {raw}");
+            }
+            PhoneAction::Key(name)
+        }
+        "text" => PhoneAction::Text(options.positional("texto")?),
+        other => bail!("ação do celular desconhecida: {other} (tap, swipe, key, text, open, wait)"),
+    })
+}
+
+/// Nome do parâmetro como variável de ambiente (`-` vira `_`).
+pub fn env_name(param: &str) -> String {
+    param.replace('-', "_")
 }
 
 /// Opção `timeout`, com o padrão das esperas.
@@ -578,12 +705,12 @@ impl Options {
         self.flags.len() != before
     }
 
-    /// Erro se sobrou argumento que ninguém usou.
     /// Todas as opções `nome=valor` que sobraram.
     fn drain_named(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.named)
     }
 
+    /// Erro se sobrou argumento que ninguém usou.
     fn finish(self) -> Result<()> {
         let leftovers: Vec<String> = self
             .positional
@@ -599,7 +726,7 @@ impl Options {
 }
 
 /// Flags sem valor aceitas pelos comandos.
-const KNOWN_FLAGS: &[&str] = &["focus", "always", "optional"];
+const KNOWN_FLAGS: &[&str] = &["focus", "always", "optional", "background"];
 
 /// Chave de opção é um identificador simples.
 fn is_option_name(key: &str) -> bool {
@@ -689,6 +816,45 @@ impl fmt::Display for Step {
                 write!(f, "call {routine}")?;
                 args.iter().try_for_each(|(name, value)| write!(f, " {name}={}", quote(value)))
             }
+            Step::Phone(PhoneAction::Tap { at, hold }) => {
+                write!(f, "phone tap {},{}", at.0, at.1)?;
+                if !hold.is_zero() {
+                    write!(f, " duration={}", format_duration(*hold))?;
+                }
+                Ok(())
+            }
+            Step::Phone(PhoneAction::TapOn { target, hold, timeout }) => {
+                write!(f, "phone tap {target}")?;
+                if !hold.is_zero() {
+                    write!(f, " duration={}", format_duration(*hold))?;
+                }
+                write_timeout(f, *timeout)
+            }
+            Step::Phone(PhoneAction::Wait { target, timeout }) => {
+                write!(f, "phone wait {target}")?;
+                write_timeout(f, *timeout)
+            }
+            Step::Phone(PhoneAction::Swipe { from, via, to, duration }) => {
+                write!(f, "phone swipe from={},{}", from.0, from.1)?;
+                write_via(f, via)?;
+                write!(f, " to={},{} duration={}", to.0, to.1, format_duration(*duration))
+            }
+            Step::Phone(PhoneAction::Open { package, timeout }) => {
+                write!(f, "phone open {package}")?;
+                write_timeout(f, *timeout)
+            }
+            Step::Phone(PhoneAction::Key(name)) => write!(f, "phone key {name}"),
+            Step::Phone(PhoneAction::Text(text)) => write!(f, "phone text {}", quote(text)),
+            Step::Shell { command, background, timeout, .. } => {
+                write!(f, "shell {}", quote(command))?;
+                if *background {
+                    f.write_str(" background")?;
+                }
+                if *timeout != DEFAULT_SHELL_TIMEOUT {
+                    write!(f, " timeout={}", format_duration(*timeout))?;
+                }
+                Ok(())
+            }
             Step::Hold { input, at } => {
                 write!(f, "hold {input}")?;
                 at.as_ref().map_or(Ok(()), |target| write_position(f, target))
@@ -709,10 +875,7 @@ impl fmt::Display for Step {
                     write_window(f, class, *nth)?;
                 }
                 write!(f, " from={},{}", from.0, from.1)?;
-                for (index, (at, (x, y))) in via.iter().enumerate() {
-                    let lead = if index == 0 { " via=" } else { ";" };
-                    write!(f, "{lead}{x},{y}@{}", format_duration(*at))?;
-                }
+                write_via(f, via)?;
                 write!(f, " to={},{}", to.0, to.1)?;
                 if *duration != DEFAULT_DRAG_DURATION {
                     write!(f, " duration={}", format_duration(*duration))?;
@@ -721,6 +884,23 @@ impl fmt::Display for Step {
             }
         }
     }
+}
+
+/// ` timeout=...` quando não é o padrão das esperas.
+fn write_timeout(f: &mut fmt::Formatter<'_>, timeout: Duration) -> fmt::Result {
+    if timeout != DEFAULT_WAIT_TIMEOUT {
+        write!(f, " timeout={}", format_duration(timeout))?;
+    }
+    Ok(())
+}
+
+/// ` via=X,Y@TEMPO;...`, se houver caminho.
+fn write_via(f: &mut fmt::Formatter<'_>, via: &[Waypoint]) -> fmt::Result {
+    for (index, (at, (x, y))) in via.iter().enumerate() {
+        let lead = if index == 0 { " via=" } else { ";" };
+        write!(f, "{lead}{x},{y}@{}", format_duration(*at))?;
+    }
+    Ok(())
 }
 
 fn write_position(f: &mut fmt::Formatter<'_>, target: &ClickTarget) -> fmt::Result {
@@ -883,6 +1063,45 @@ mod tests {
         assert!(parse("drag from=1,1 via=5,5@1s to=2,2 duration=500ms").is_err(), "via depois do fim");
         assert!(parse("drag from=1,1 via=5,5 to=2,2").is_err(), "via sem tempo");
         assert!(parse("move").is_err());
+    }
+
+    #[test]
+    fn phone_steps_round_trip() {
+        for line in [
+            "phone tap 540,1200",
+            "phone tap 540,1200 duration=800ms",
+            "phone swipe from=540,1800 to=540,600 duration=300ms",
+            "phone swipe from=200,1500 via=540,1500@200ms;540,1800@450ms to=880,1800 duration=700ms",
+            "phone open br.com.brainweb.ifood",
+            "phone open br.com.brainweb.ifood timeout=10s",
+            "phone tap text=Restaurantes",
+            "phone tap text=\"Ver sacola\" id=checkout duration=800ms timeout=10s",
+            "phone wait text=\"O que vai pedir hoje\"",
+            "phone wait id=home_feed timeout=45s",
+            "phone key BACK",
+            "phone text \"bom dia\"",
+        ] {
+            assert_eq!(parse_line(line).unwrap().step.to_string(), line);
+        }
+        assert_eq!(parse_line("phone key keycode_home").unwrap().step, Step::Phone(PhoneAction::Key("HOME".into())));
+        assert!(parse_line("phone key BACK;reboot").is_err());
+        assert!(parse_line("phone pinch").is_err());
+        assert!(parse_line("phone wait").is_err(), "wait sem alvo");
+        assert!(parse_line("phone tap text=(").is_err(), "regex inválida");
+    }
+
+    #[test]
+    fn shell_gets_params_as_env_not_text() {
+        let args = vec![("minha-pessoa".to_string(), "ana; rm x".to_string())];
+        let line = parse_line_with("shell \"echo \\\"$minha_pessoa\\\"\" background timeout=1m", &args).unwrap();
+        let Step::Shell { command, background, timeout, env } = &line.step else { panic!("{:?}", line.step) };
+        assert_eq!(command, "echo \"$minha_pessoa\"");
+        assert!(*background);
+        assert_eq!(*timeout, Duration::from_secs(60));
+        assert_eq!(env, &vec![("minha_pessoa".to_string(), "ana; rm x".to_string())]);
+        let round = Step::Shell { command: command.clone(), background: true, timeout: *timeout, env: Vec::new() };
+        assert_eq!(parse_line(&line.step.to_string()).unwrap().step, round);
+        assert!(parse_line_with("shell \"echo {minha-pessoa}\"", &args).is_err(), "{{x}} no shell vira erro");
     }
 
     #[test]

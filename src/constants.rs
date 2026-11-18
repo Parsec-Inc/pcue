@@ -39,6 +39,10 @@ pub const MOVE_FRAME: Duration = Duration::from_millis(16);
 /// Distância mínima, em pixels, para a gravação tratar um clique como arrasto.
 pub const DRAG_THRESHOLD: i32 = 6;
 pub const RECORDED_DRAG_MIN: Duration = Duration::from_millis(100);
+/// Parâmetros que o gatilho de notificação preenche: app, título e texto.
+pub const NOTIFICATION_PARAMS: [&str; 3] = ["app", "titulo", "texto"];
+/// Parâmetros que o gatilho de dispositivo preenche: nome e id `vendor:product`.
+pub const DEVICE_PARAMS: [&str; 2] = ["dispositivo", "id"];
 /// Opções dos passos que não podem ser nome de parâmetro.
 pub const RESERVED_PARAMS: [&str; 4] = ["optional", "if_window", "unless_window", "repeat"];
 /// Gravação: intervalo entre leituras da posição do cursor.
@@ -49,6 +53,20 @@ pub const CURSOR_HISTORY: Duration = Duration::from_secs(5);
 pub const DRAG_PATH_TOLERANCE: f64 = 2.0;
 
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
+/// Celular: distância, em pixels, até um toque virar arrasto.
+pub const PHONE_TAP_SLOP: i32 = 24;
+/// Celular: toque parado a partir deste tempo vira toque longo.
+pub const PHONE_LONG_PRESS: Duration = Duration::from_millis(500);
+/// Celular: pixels de tolerância ao simplificar o caminho de um arrasto.
+pub const PHONE_PATH_TOLERANCE: f64 = 12.0;
+/// Celular: custo aproximado de cada `input motionevent`, descontado das esperas.
+pub const PHONE_MOTION_COST: Duration = Duration::from_millis(30);
+/// Celular: intervalo entre consultas do app em primeiro plano durante a gravação.
+pub const PHONE_FOCUS_POLL: Duration = Duration::from_millis(300);
+/// Tempo para a tela recém-acesa começar a aceitar toques.
+pub const PHONE_WAKE_SETTLE: Duration = Duration::from_millis(800);
+/// Celular: duração padrão do `phone swipe`.
+pub const DEFAULT_PHONE_SWIPE: Duration = Duration::from_millis(300);
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
 pub const RECORD_SLEEP_ROUNDING_MS: u128 = 100;
 #[cfg(target_os = "linux")]
@@ -60,6 +78,14 @@ pub const DAEMON_SOCKET: &str = "daemon.sock";
 pub const DAEMON_TICK: Duration = Duration::from_secs(1);
 /// Quanto o daemon novo espera o antigo liberar o canal.
 pub const DAEMON_HANDOFF: Duration = Duration::from_secs(5);
+/// Espera padrão de um `shell` antes de desistir.
+pub const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Linhas finais do erro de um `shell` que vão para a mensagem de falha.
+pub const SHELL_ERROR_LINES: usize = 3;
+/// Bytes da saída de erro de um `shell` guardados para a mensagem de falha.
+pub const SHELL_STDERR_LIMIT: u64 = 64 * 1024;
+/// Intervalo entre conferências do fim de um `shell`.
+pub const SHELL_POLL: Duration = Duration::from_millis(20);
 pub const EVENT_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 pub const TUI_RUN_DELAY_MS: u64 = 1500;
 
@@ -115,6 +141,21 @@ pub const DEFAULT_EDITOR: &str = "nano";
 pub const DEFAULT_EDITOR: &str = "notepad";
 /// Gravação: intervalo entre consultas ao desktop.
 pub const DESKTOP_POLL: Duration = Duration::from_millis(150);
+/// Classe de interface dos dispositivos USB (GUID_DEVINTERFACE_USB_DEVICE).
+#[cfg(windows)]
+pub const USB_DEVICE_INTERFACE: u128 = 0xA5DCBF10_6530_11D2_901F_00C04FB951ED;
+/// Grupo netlink dos uevents do kernel.
+#[cfg(target_os = "linux")]
+pub const KERNEL_UEVENTS: u32 = 1;
+/// Tamanho máximo lido de um uevent.
+#[cfg(target_os = "linux")]
+pub const UEVENT_BUFFER: usize = 8192;
+/// `bDeviceClass` dos hubs USB, ignorados pelo gatilho de dispositivo.
+#[cfg(target_os = "linux")]
+pub const USB_HUB_CLASS: &str = "09";
+/// Dispositivos USB no sysfs.
+#[cfg(target_os = "linux")]
+pub const USB_DEVICES_DIR: &str = "/sys/bus/usb/devices";
 /// Gravação: eventos do Hyprland que pedem uma nova consulta ao desktop.
 #[cfg(target_os = "linux")]
 pub const DESKTOP_CHANGE_EVENTS: [&str; 6] =

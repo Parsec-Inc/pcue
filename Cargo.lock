@@ -1025,6 +1025,7 @@ dependencies = [
  "evdev",
  "interprocess",
  "jiff",
+ "libc",
  "png",
  "ratatui",
  "regex",
