@@ -13,7 +13,7 @@ use super::app::{App, CELEBRATE_FOR, Hit, Modal, Pane, RecPhase, Recording};
 use crate::constants::DESKTOP_MARK;
 use crate::draft::Draft;
 use super::sprites::{self, Sprite};
-use crate::config::{Routine, Trigger};
+use crate::config::{Routine, Trigger, params_label};
 use crate::schedule::describe_next;
 use crate::script::{SYNTAX, format_duration, is_comment};
 
@@ -304,6 +304,12 @@ fn draw_summary(frame: &mut Frame, area: Rect, app: &App, routine: &Routine) {
         Span::styled(routine.name.as_str(), Style::new().bold()),
         Span::styled(format!("  {} · {state} · {steps} passo(s)", routine.kind_label()), Style::new().fg(MUTED)),
     ])];
+    if !routine.params.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("parâmetros: ", Style::new().fg(MUTED)),
+            Span::styled(params_label(&routine.params), Style::new().fg(ACCENT)),
+        ]));
+    }
     lines.push(match app.last_run(&routine.name) {
         None => Line::styled("nunca executada", Style::new().fg(MUTED)),
         Some(run) => {
@@ -515,6 +521,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             list.extend([
                 ("n", "nova", c('n')),
                 ("D", "duplicar", c('D')),
+                ("P", "parâmetros", c('P')),
                 ("r", "renomear", c('r')),
                 ("d", "apagar", c('d')),
                 ("␣", "ativar", c(' ')),
@@ -818,7 +825,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, area: Rect, routine: &str, draf
     .areas(inner);
     frame.render_widget(
         Paragraph::new(format!(
-            "{} trecho(s) com alternativas. Tab/←→ troca a forma · p liga/desliga a pausa antes · d apaga · ⏎ salva · Esc descarta",
+            "{} trecho(s) com alternativas. Tab/←→ troca a forma · p liga/desliga a pausa antes · e edita · s separa em passos · d apaga · ⏎ salva · Esc descarta",
             draft.choices()
         ))
         .fg(MUTED)
@@ -874,7 +881,18 @@ fn draw_review(frame: &mut Frame, app: &mut App, area: Rect, routine: &str, draf
     }
     let preview = pane_block("Formas deste trecho", false);
     frame.render_widget(Paragraph::new(lines).block(preview).wrap(Wrap { trim: false }), preview_area);
-    draw_buttons(frame, app, buttons, &[("salvar ⏎", KeyCode::Enter, true), ("descartar", KeyCode::Esc, false)]);
+    draw_buttons(
+        frame,
+        app,
+        buttons,
+        &[
+            ("salvar ⏎", KeyCode::Enter, true),
+            ("editar (e)", KeyCode::Char('e'), false),
+            ("separar (s)", KeyCode::Char('s'), false),
+            ("apagar (d)", KeyCode::Char('d'), false),
+            ("descartar", KeyCode::Esc, false),
+        ],
+    );
 }
 
 fn draw_recording(frame: &mut Frame, app: &mut App) {
@@ -1044,10 +1062,11 @@ const HELP_GENERAL: &[&str] = &[
     "Gravação (R no painel de passos)",
     "  SUPER+F9 pausa/retoma (use em senhas) · SUPER+F10 encerra",
     "  apps abertos viram launch, troca de janela vira focus/workspace; cliques ficam relativos à janela",
-    "  ao encerrar, revise: Tab troca a forma do trecho · p liga/desliga a pausa · d apaga · ⏎ salva",
+    "  ao encerrar, revise: Tab troca a forma · p liga/desliga a pausa · e edita · s separa · d apaga · ⏎ salva",
     "",
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
     "  mudanças ficam pendentes até S (ou Ctrl+S) salvar · u descarta · sair com pendências pede confirmação",
+    "  P parâmetros: {nome} nos passos; ao rodar a TUI pergunta os valores (pcue run rotina nome=valor, call rotina nome=valor)",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];

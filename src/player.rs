@@ -7,7 +7,7 @@ use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME};
 use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
 use crate::platform::{Desktop, VirtualInput};
 use crate::progress::{self, Progress};
-use crate::script::{ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, Waypoint, WindowRef, parse_steps};
+use crate::script::{Arg, ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, Waypoint, WindowRef};
 use crate::keys::Key;
 use crate::utils::log;
 
@@ -147,7 +147,7 @@ impl<'a> Player<'a> {
                     player.device()?.click(*button)
                 })
             }
-            Step::Call(name) => self.call(name),
+            Step::Call { routine, args } => self.call(routine, args),
             Step::Hold { input, at } => {
                 if let Some(target) = at {
                     self.point_at(target)?;
@@ -249,7 +249,7 @@ impl<'a> Player<'a> {
         Ok(())
     }
 
-    fn call(&mut self, name: &str) -> Result<()> {
+    fn call(&mut self, name: &str, args: &[Arg]) -> Result<()> {
         if self.stack.len() >= MAX_CALL_DEPTH {
             bail!("call aninhado demais (máximo {MAX_CALL_DEPTH})");
         }
@@ -260,7 +260,7 @@ impl<'a> Player<'a> {
         let routine = config
             .find(name)
             .with_context(|| format!("rotina '{name}' não existe"))?;
-        let lines = parse_steps(&routine.steps)?;
+        let lines = routine.lines(args)?;
         self.play(name, &lines)
             .map_err(|f| f.error.context(format!("{name}, linha {}", f.line)))
     }

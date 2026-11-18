@@ -39,6 +39,8 @@ pub const MOVE_FRAME: Duration = Duration::from_millis(16);
 /// Distância mínima, em pixels, para a gravação tratar um clique como arrasto.
 pub const DRAG_THRESHOLD: i32 = 6;
 pub const RECORDED_DRAG_MIN: Duration = Duration::from_millis(100);
+/// Opções dos passos que não podem ser nome de parâmetro.
+pub const RESERVED_PARAMS: [&str; 4] = ["optional", "if_window", "unless_window", "repeat"];
 /// Gravação: intervalo entre leituras da posição do cursor.
 pub const CURSOR_SAMPLE: Duration = Duration::from_millis(8);
 /// Gravação: por quanto tempo guardar as posições do cursor fora de um arrasto.

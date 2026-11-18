@@ -20,7 +20,7 @@ mod utils;
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
@@ -60,6 +60,9 @@ enum Command {
         /// Executa só a linha N do script
         #[arg(long)]
         only: Option<usize>,
+        /// Valores dos parâmetros da rotina
+        #[arg(value_name = "PARÂMETRO=VALOR")]
+        args: Vec<String>,
     },
     /// Envia um evento personalizado ao daemon
     Emit { event: String },
@@ -105,10 +108,18 @@ fn main() -> Result<()> {
             delay_ms,
             from,
             only,
+            args,
         } => {
             let selection = Selection::from_flags(from, only);
+            let args = args
+                .iter()
+                .map(|arg| {
+                    let (name, value) = arg.split_once('=').with_context(|| format!("use PARÂMETRO=VALOR: {arg}"))?;
+                    Ok((name.to_string(), value.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
             std::thread::sleep(Duration::from_millis(delay_ms));
-            runner::run_routine(&Config::load(&path)?, &routine, &trigger, selection)
+            runner::run_routine(&Config::load(&path)?, &routine, &trigger, selection, &args)
         }
         Command::Emit { event } => daemon::emit(&event),
         Command::List => {

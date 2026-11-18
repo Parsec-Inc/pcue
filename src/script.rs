@@ -19,7 +19,7 @@ pub const SYNTAX: &[&str] = &[
     "click [left|right|middle] [hold=CTRL] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
     "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]",
     "hold SUPER | mouse_right [X,Y]   release SUPER | mouse_right   move X,Y [duration=300ms]",
-    "call outra_rotina      # comentário",
+    "call outra_rotina [parâmetro=valor]      # comentário",
     "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
 ];
 
@@ -63,7 +63,8 @@ pub enum Step {
         target: ClickTarget,
     },
     Scroll(i32),
-    Call(String),
+    /// Roda outra rotina com os valores dos parâmetros dela.
+    Call { routine: String, args: Vec<Arg> },
     /// Aperta e mantém até um `release` ou o fim da rotina.
     Hold {
         input: Input,
@@ -154,6 +155,9 @@ pub struct ClickTarget {
 /// Class da janela e qual delas (`nth` conta por ordem de abertura, a partir de 1).
 pub type WindowRef = (String, usize);
 
+/// Valor de parâmetro passado a uma rotina (`nome=valor`).
+pub type Arg = (String, String);
+
 /// Ponto de um trajeto e o instante, desde o início, em que o cursor passa por ele.
 pub type Waypoint = (Duration, (i32, i32));
 
@@ -165,8 +169,8 @@ pub struct Line {
     pub guard: Guard,
 }
 
-/// Interpreta os passos de uma rotina, ignorando vazios e comentários.
-pub fn parse_steps<S: AsRef<str>>(lines: &[S]) -> Result<Vec<Line>> {
+/// Interpreta os passos, ignorando vazios e comentários e trocando `{nome}` pelos valores.
+pub fn parse_steps_with<S: AsRef<str>>(lines: &[S], args: &[Arg]) -> Result<Vec<Line>> {
     lines
         .iter()
         .map(AsRef::as_ref)
@@ -174,7 +178,7 @@ pub fn parse_steps<S: AsRef<str>>(lines: &[S]) -> Result<Vec<Line>> {
         .filter(|(_, line)| !is_comment(line))
         .map(|(index, line)| {
             let number = index + 1;
-            parse_line(line)
+            parse_line_with(line, args)
                 .map(|Instruction { step, guard }| Line { number, step, guard })
                 .with_context(|| format!("linha {number}: {}", line.trim()))
         })
@@ -184,7 +188,7 @@ pub fn parse_steps<S: AsRef<str>>(lines: &[S]) -> Result<Vec<Line>> {
 /// Interpreta o texto de vários passos separados por linha.
 #[cfg(test)]
 fn parse(raw: &str) -> Result<Vec<Line>> {
-    parse_steps(&raw.lines().collect::<Vec<_>>())
+    parse_steps_with(&raw.lines().collect::<Vec<_>>(), &[])
 }
 
 /// A linha é comentário ou vazia?
@@ -195,7 +199,23 @@ pub fn is_comment(line: &str) -> bool {
 
 /// Interpreta um passo e suas condições.
 pub fn parse_line(line: &str) -> Result<Instruction> {
-    let tokens = tokenize(line)?;
+    parse_line_with(line, &[])
+}
+
+/// Interpreta um passo trocando `{nome}` pelos valores; um valor nunca vira opção.
+pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
+    let mut tokens = tokenize(line)?;
+    for token in tokens.iter_mut().skip(1) {
+        let expanded = expand(&token.text, args);
+        if expanded != token.text {
+            if let Some((key, value)) = token.text.split_once('=').filter(|(key, _)| is_option_name(key)) {
+                token.text = format!("{key}={}", expand(value, args));
+            } else {
+                token.text = expanded;
+                token.literal = true;
+            }
+        }
+    }
     let (verb, args) = tokens.split_first().ok_or_else(|| anyhow!("linha vazia"))?;
     let mut options = Options::new(args);
     let guard = Guard {
@@ -243,9 +263,9 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
         "hold" => parse_hold(&mut options)?,
         "release" => Step::Release(Input::parse(&options.positional("tecla ou botão")?)?),
         "call" => {
-            let name = options.positional("rotina")?;
-            crate::config::validate_name(&name)?;
-            Step::Call(name)
+            let routine = options.positional("rotina")?;
+            crate::config::validate_name(&routine)?;
+            Step::Call { routine, args: options.drain_named() }
         }
         "scroll" => Step::Scroll(
             options
@@ -460,6 +480,31 @@ fn tokenize(line: &str) -> Result<Vec<Token>> {
     Ok(tokens)
 }
 
+/// Troca cada `{nome}` conhecido pelo valor; o resto do texto fica igual.
+pub fn expand(text: &str, args: &[Arg]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let value = after
+            .find('}')
+            .and_then(|close| args.iter().find(|(name, _)| *name == after[..close]).map(|(_, v)| (close, v)));
+        match value {
+            Some((close, value)) => {
+                out.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Coloca aspas e escapes quando o valor não pode ir cru.
 pub fn quote(value: &str) -> String {
     let plain = !value.is_empty()
@@ -534,6 +579,11 @@ impl Options {
     }
 
     /// Erro se sobrou argumento que ninguém usou.
+    /// Todas as opções `nome=valor` que sobraram.
+    fn drain_named(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.named)
+    }
+
     fn finish(self) -> Result<()> {
         let leftovers: Vec<String> = self
             .positional
@@ -635,7 +685,10 @@ impl fmt::Display for Step {
                 write_position(f, target)
             }
             Step::Scroll(amount) => write!(f, "scroll {amount}"),
-            Step::Call(name) => write!(f, "call {name}"),
+            Step::Call { routine, args } => {
+                write!(f, "call {routine}")?;
+                args.iter().try_for_each(|(name, value)| write!(f, " {name}={}", quote(value)))
+            }
             Step::Hold { input, at } => {
                 write!(f, "hold {input}")?;
                 at.as_ref().map_or(Ok(()), |target| write_position(f, target))
@@ -833,6 +886,19 @@ mod tests {
     }
 
     #[test]
+    fn params_fill_steps_and_calls() {
+        let args = vec![("pessoa".to_string(), "erick silva".to_string()), ("app".to_string(), "teams".to_string())];
+        let lines = ["type {pessoa}", "focus class={app}", "type \"oi {pessoa}\"", "type {pessoa}=x", "call outra pessoa={pessoa}", "type a{2}"];
+        let steps: Vec<Step> = parse_steps_with(&lines, &args).unwrap().into_iter().map(|l| l.step).collect();
+        assert_eq!(steps[0], Step::Type("erick silva".into()));
+        assert!(matches!(&steps[1], Step::Focus { class, .. } if class == "teams"));
+        assert_eq!(steps[2], Step::Type("oi erick silva".into()));
+        assert_eq!(steps[3], Step::Type("erick silva=x".into()));
+        assert_eq!(steps[4].to_string(), "call outra pessoa=\"erick silva\"");
+        assert_eq!(steps[5], Step::Type("a{2}".into()));
+    }
+
+    #[test]
     fn rejects_unknown_arguments() {
         assert!(parse("sleep 1s extra").is_err());
         assert!(parse("wait_window").is_err());
@@ -843,7 +909,7 @@ mod tests {
     #[test]
     fn parses_guards_and_call() {
         let lines = parse("call setup if_window=kitty repeat=3 optional\nkey SUPER+1 unless_window=\"fire.*\"").unwrap();
-        assert_eq!(lines[0].step, Step::Call("setup".into()));
+        assert_eq!(lines[0].step, Step::Call { routine: "setup".into(), args: Vec::new() });
         assert_eq!(lines[0].guard.repeat, 3);
         assert!(lines[0].guard.optional);
         assert_eq!(lines[0].guard.if_window.as_deref(), Some("kitty"));
