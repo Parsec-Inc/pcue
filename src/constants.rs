@@ -53,6 +53,18 @@ pub const CURSOR_HISTORY: Duration = Duration::from_secs(5);
 pub const DRAG_PATH_TOLERANCE: f64 = 2.0;
 
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
+/// Celular: distância, em pixels, até um toque virar arrasto.
+pub const PHONE_TAP_SLOP: i32 = 24;
+/// Celular: toque parado a partir deste tempo vira toque longo.
+pub const PHONE_LONG_PRESS: Duration = Duration::from_millis(500);
+/// Celular: pixels de tolerância ao simplificar o caminho de um arrasto.
+pub const PHONE_PATH_TOLERANCE: f64 = 12.0;
+/// Celular: custo aproximado de cada `input motionevent`, descontado das esperas.
+pub const PHONE_MOTION_COST: Duration = Duration::from_millis(30);
+/// Celular: intervalo entre consultas do app em primeiro plano durante a gravação.
+pub const PHONE_FOCUS_POLL: Duration = Duration::from_millis(300);
+/// Celular: duração padrão do `phone swipe`.
+pub const DEFAULT_PHONE_SWIPE: Duration = Duration::from_millis(300);
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
 pub const RECORD_SLEEP_ROUNDING_MS: u128 = 100;
 #[cfg(target_os = "linux")]

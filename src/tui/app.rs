@@ -122,6 +122,7 @@ pub enum InputPurpose {
 #[derive(Clone, Copy)]
 pub enum PickPurpose {
     TriggerKind(Option<usize>),
+    RecordTarget,
     Event(Option<usize>),
 }
 
@@ -164,6 +165,8 @@ pub enum RecPhase {
 pub struct Recording {
     session: recorder::Session,
     pub routine: String,
+    /// Grava o celular pelo adb em vez do PC.
+    pub phone: bool,
     pub phase: RecPhase,
     pub steps: Vec<String>,
     /// Ações gravadas (sem contar as mudanças do desktop).
@@ -651,7 +654,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('a') => self.open_input("Novo passo", &step_hint(), "", InputPurpose::AddStep),
-            KeyCode::Char('R') => self.start_recording(),
+            KeyCode::Char('R') => self.pick_record_target(),
             KeyCode::Char('c') => self.capture_windows(),
             KeyCode::Char('E') => self.open_editor = true,
             _ if count == 0 => {}
@@ -1139,6 +1142,7 @@ impl App {
 
     fn apply_pick(&mut self, purpose: PickPurpose, index: usize, choice: &str) {
         match purpose {
+            PickPurpose::RecordTarget => self.start_recording(index == 1),
             PickPurpose::TriggerKind(editing) => match index {
                 0 => self.pick_event(editing),
                 1 => self.open_input("Horário diário", DAILY_HINT, "", InputPurpose::Daily(editing)),
@@ -1507,11 +1511,27 @@ impl App {
         self.open_modal(Modal::Log { lines, scroll });
     }
 
-    fn start_recording(&mut self) {
+    fn pick_record_target(&mut self) {
+        if self.routine().is_none() {
+            return;
+        }
+        self.open_modal(Modal::Pick {
+            title: "Gravar".into(),
+            options: vec![
+                ("PC".into(), "teclado, mouse e janelas".into()),
+                ("celular".into(), "toques e botões do Android, pelo adb".into()),
+            ],
+            selected: 0,
+            purpose: PickPurpose::RecordTarget,
+        });
+    }
+
+    fn start_recording(&mut self, phone: bool) {
         let Some(routine) = self.routine().map(|r| r.name.clone()) else { return };
         self.recording = Some(Recording {
-            session: recorder::start(),
+            session: recorder::start(phone),
             routine,
+            phone,
             phase: RecPhase::Countdown(crate::constants::RECORD_COUNTDOWN_SECS),
             steps: Vec::new(),
             actions: 0,
@@ -1549,10 +1569,10 @@ impl App {
             }
         };
         let Some(outcome) = outcome else { return };
-        let routine = recording.routine.clone();
+        let (routine, phone) = (recording.routine.clone(), recording.phone);
         self.recording = None;
         match outcome {
-            Ok(draft) if draft.choices() > 0 => {
+            Ok(draft) if draft.choices() > 0 || (phone && !draft.items.is_empty()) => {
                 self.open_modal(Modal::Review {
                     routine,
                     draft,

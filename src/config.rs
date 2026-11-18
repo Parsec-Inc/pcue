@@ -352,7 +352,8 @@ fn check_filter(filter: &str) -> Result<()> {
     filter_regex(filter).map(|_| ()).with_context(|| format!("filtro inválido: {filter}"))
 }
 
-fn filter_regex(filter: &str) -> Result<Regex, regex::Error> {
+/// Regex sem diferenciar maiúsculas, como nos filtros dos gatilhos.
+pub fn filter_regex(filter: &str) -> Result<Regex, regex::Error> {
     RegexBuilder::new(filter).case_insensitive(true).build()
 }
 

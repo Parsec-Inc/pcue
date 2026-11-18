@@ -938,7 +938,9 @@ fn draw_recording(frame: &mut Frame, app: &mut App) {
     let info_lines = vec![
         Line::raw(""),
         Line::from(match recording.phase {
+            RecPhase::Countdown(_) if recording.phone => "Pegue o celular.",
             RecPhase::Countdown(_) => "Troque para a janela onde vai agir.",
+            RecPhase::Recording if recording.phone => "Toques e botões do celular viram passos.",
             RecPhase::Recording => "Teclado, mouse e janelas viram passos.",
             RecPhase::Paused => "Nada é gravado agora (bom para senhas).",
         }),

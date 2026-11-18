@@ -444,22 +444,9 @@ pub fn lua_str(value: &str) -> String {
 /// Junta argumentos numa linha de shell com aspas quando necessário.
 pub fn shell_join<S: AsRef<str>>(args: &[S]) -> String {
     args.iter()
-        .map(|arg| shell_quote(arg.as_ref()))
+        .map(|arg| crate::utils::shell_quote(arg.as_ref()))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Aspas simples POSIX para um argumento.
-fn shell_quote(arg: &str) -> String {
-    let safe = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
-    if safe {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
 }
 
 #[cfg(test)]

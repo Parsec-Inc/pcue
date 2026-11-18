@@ -197,6 +197,13 @@ release SUPER
 scroll -3
 call outra_rotina [parâmetro=valor]
 shell "comando" [background] [timeout=5m]
+phone tap X,Y [duration=800ms]  # celular: toque (com duration, toque longo)
+phone tap text=REGEX [id=REGEX] [timeout=30s]   # toca no elemento pelo texto
+phone wait text=REGEX [id=REGEX] [timeout=30s]  # espera o elemento aparecer
+phone swipe from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]
+phone open br.com.brainweb.ifood [timeout=30s]   # abre o app e espera ele aparecer
+phone key BACK                  # HOME, APP_SWITCH, ENTER, WAKEUP, VOLUME_UP...
+phone text "texto"
 # comentário
 ```
 
@@ -273,6 +280,44 @@ O daemon lê as notificações pelo D-Bus da sessão e não grava o conteúdo no
 log. Notificações do próprio pcue são ignoradas, e a mesma notificação
 repetida em menos de 2 s dispara uma vez só. Se o Teams estiver configurado
 para esconder a prévia da mensagem, `texto` chega vazio.
+
+### Celular (adb)
+
+Os passos `phone` controlam um Android pelo `adb` (pacote `android-tools`),
+com a **Depuração USB** ligada nas Opções do desenvolvedor do celular. As
+posições são pixels da tela dele, na vertical. O primeiro passo `phone` de
+cada execução espera o celular aparecer no adb, até o timeout da config, e
+acende a tela se ela estiver apagada (a gravação também). Com bloqueio por
+padrão, grave o desenho logo depois.
+
+Para gravar, use `R` → **celular** na TUI (ou `pcue record --phone ROTINA`) e
+mexa no celular: toque vira `phone tap`, toque parado por meio segundo vira
+toque longo, arrasto vira `phone swipe` com o caminho inteiro em `via` (dá
+para gravar o padrão de desbloqueio sem tirar o dedo), e os botões físicos (voltar, home,
+volume, power) viram `phone key`, com as pausas entre eles. `SUPER+F9` pausa
+e `SUPER+F10` encerra, no teclado do PC. A revisão sempre abre no fim: troque
+a sequência de toques no teclado virtual por um `phone text "..."` (com `e`
+num trecho). `phone text` só digita ASCII; acentos não passam pelo adb.
+
+`phone wait` e `phone tap text=` leem a tela pelo `uiautomator` (cerca de 3 s
+por leitura) até achar um elemento cujo texto ou descrição case com `text=`
+(regex sem diferenciar maiúsculas) e cujo id case com `id=`. Servem para
+esperar o app terminar de carregar e para tocar num botão onde quer que ele
+esteja. Telas protegidas (senha, alguns bancos e jogos) não são lidas.
+
+Durante a gravação a tela é lida sem parar: um toque num elemento com texto,
+descrição ou id que o identifica sozinho vira `phone tap text=...`, com a
+posição como alternativa na revisão. Toques muito seguidos (antes de dar
+tempo de ler a tela) ficam pela posição.
+
+Quando um app abre a partir da tela inicial, os toques feitos nela até ali
+viram um único `phone open PACOTE` (a forma gravada fica como alternativa na
+revisão, com `←`/`→`). O padrão de desbloqueio gravado fica em texto puro na
+config: quem ler o arquivo consegue desbloquear o celular.
+
+Só o primeiro dedo é gravado (pinça vira um arrasto), e a tela é tratada na
+vertical. Os toques são repetidos nas mesmas posições, então um app que mudou
+de layout ou a tela girada fazem a rotina errar, como os cliques no PC.
 
 ### Gatilho por dispositivo
 

@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME, SHELL_ERROR_LINES, SHELL_POLL, SHELL_STDERR_LIMIT};
 use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
 use crate::platform::{self, Desktop, VirtualInput};
+use crate::phone;
 use crate::progress::{self, Progress};
 use crate::script::{Arg, ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, Waypoint, WindowRef};
 use crate::keys::Key;
@@ -26,6 +27,8 @@ pub struct Player<'a> {
     stack: Vec<String>,
     /// Teclas e botões apertados por `hold`, soltos no fim da rotina.
     held: Vec<Input>,
+    /// O celular já respondeu ao adb nesta execução.
+    phone_ready: bool,
 }
 
 impl<'a> Player<'a> {
@@ -37,6 +40,7 @@ impl<'a> Player<'a> {
             input: None,
             stack: Vec::new(),
             held: Vec::new(),
+            phone_ready: false,
         }
     }
 
@@ -148,6 +152,13 @@ impl<'a> Player<'a> {
                 })
             }
             Step::Call { routine, args } => self.call(routine, args),
+            Step::Phone(action) => {
+                if !self.phone_ready {
+                    phone::prepare(timeout)?;
+                    self.phone_ready = true;
+                }
+                phone::run(action)
+            }
             Step::Shell { command, background, timeout, env } => run_shell(command, *background, *timeout, env),
             Step::Hold { input, at } => {
                 if let Some(target) = at {
