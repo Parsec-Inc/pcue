@@ -60,12 +60,10 @@ impl VirtualInput {
         self.release(Input::Mouse(button))
     }
 
-    /// Aperta e mantém a tecla ou o botão.
     pub fn press(&mut self, input: Input) -> Result<()> {
         send(&[input_event(input, false)?])
     }
 
-    /// Solta a tecla ou o botão.
     pub fn release(&mut self, input: Input) -> Result<()> {
         send(&[input_event(input, true)?])
     }

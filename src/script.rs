@@ -57,7 +57,6 @@ pub enum Step {
     Sleep(Duration),
     Key(Vec<Key>),
     Type(String),
-    /// Clica, com as teclas de `hold` seguradas durante o clique.
     Click {
         button: Button,
         hold: Vec<Key>,
@@ -87,7 +86,6 @@ pub enum Step {
     },
 }
 
-/// Tecla ou botão do mouse que pode ficar pressionado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Key(Key),
@@ -279,7 +277,6 @@ fn parse_click(options: &mut Options) -> Result<Step> {
     Ok(Step::Click { button, hold, target })
 }
 
-/// Opção `hold=SUPER+SHIFT`, vazia se ausente.
 fn parse_hold_keys(options: &mut Options) -> Result<Vec<Key>> {
     Ok(options.take("hold").map(|raw| parse_combo(&raw)).transpose()?.unwrap_or_default())
 }
@@ -321,7 +318,6 @@ fn point_target(raw: &str, window: Option<&(String, usize)>) -> Result<ClickTarg
     })
 }
 
-/// Opção de duração `key`, ou `default` se ausente.
 fn parse_optional_duration(options: &mut Options, key: &str, default: Duration) -> Result<Duration> {
     options.take(key).map_or(Ok(default), |raw| parse_duration(&raw))
 }
@@ -656,7 +652,6 @@ impl fmt::Display for Step {
     }
 }
 
-/// ` X,Y` ou ` window=CLASS [nth=N] at=X,Y`.
 fn write_position(f: &mut fmt::Formatter<'_>, target: &ClickTarget) -> fmt::Result {
     match target {
         ClickTarget::Absolute { x, y } => write!(f, " {x},{y}"),

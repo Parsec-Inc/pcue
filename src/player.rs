@@ -176,7 +176,6 @@ impl<'a> Player<'a> {
         }
     }
 
-    /// Leva o cursor ao alvo e espera o compositor acompanhar.
     fn point_at(&self, target: &ClickTarget) -> Result<()> {
         let (x, y) = resolve_click(self.desktop, target, self.timeout)?;
         self.desktop.move_cursor(x, y)?;

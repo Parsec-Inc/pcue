@@ -369,7 +369,6 @@ impl<'a> Recorder<'a> {
         });
     }
 
-    /// Modificadores seguros agora, na ordem canônica.
     fn held_modifiers(&self) -> Vec<Key> {
         MODIFIERS.iter().copied().filter(|m| self.held.contains(m)).collect()
     }

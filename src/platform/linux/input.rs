@@ -79,12 +79,10 @@ impl VirtualInput {
         Ok(())
     }
 
-    /// Aperta e mantém a tecla ou o botão.
     pub fn press(&mut self, input: Input) -> Result<()> {
         self.emit(EventType::KEY, input_code(input), 1)
     }
 
-    /// Solta a tecla ou o botão.
     pub fn release(&mut self, input: Input) -> Result<()> {
         self.emit(EventType::KEY, input_code(input), 0)
     }
