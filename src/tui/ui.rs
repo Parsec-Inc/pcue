@@ -525,6 +525,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             ("x", "rodar só este", c('x')),
             ("f", "rodar daqui", c('f')),
             ("d", "apagar", c('d')),
+            ("C", "limpar", c('C')),
             ("J/K", "mover", c('J')),
             ("R", "gravar", c('R')),
             ("c", "capturar janelas", c('c')),

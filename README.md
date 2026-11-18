@@ -163,7 +163,7 @@ sozinho quando o binário muda.
 | Geral | `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
-| Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |
+| Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `C` limpa todos (pede confirmação) · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |
 
 Com o mouse: clique seleciona, duplo clique roda (rotina) ou edita (gatilho e
 passo), a roda rola as listas e os botões do rodapé e das janelas respondem ao
