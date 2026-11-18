@@ -1,3 +1,9 @@
+## 0.5.0 (2026-11-18)
+
+### Feat
+
+- **tui**: edições ficam pendentes até salvar com S, com descarte e confirmação ao sair ou rodar
+
 ## 0.4.0 (2026-11-18)
 
 ### Feat
