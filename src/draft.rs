@@ -190,28 +190,37 @@ fn focused_on(event: &DesktopEvent, id: &str) -> bool {
     matches!(&event.change, Change::Focused { window: Some(w), .. } if w.id == id)
 }
 
-/// Início da sequência que abriu a janela: ações próximas, começando num atalho ou clique.
+/// Início do que abriu a janela: o último atalho ou clique, ou um lançador (atalho, texto e Enter).
 fn opened_cause(actions: &[Action], next: usize, upto: usize) -> usize {
-    let mut start = upto;
-    while start > next && (start == upto || close(&actions[start - 1], &actions[start])) {
-        start -= 1;
+    let linked = |i: usize| i == upto || close(&actions[i - 1], &actions[i]);
+    let back_while = |mut i: usize, kind: ActionKind| {
+        while i > next && actions[i - 1].kind == kind && linked(i) {
+            i -= 1;
+        }
+        i
+    };
+    let combos = back_while(upto, ActionKind::Combo);
+    let text = back_while(combos, ActionKind::Text);
+    if text < combos {
+        let opener = text > next && linked(text) && is_trigger(&actions[text - 1]);
+        return if opener { text - 1 } else { combos };
     }
-    while start < upto && matches!(actions[start].kind, ActionKind::Text | ActionKind::Scroll) {
-        start += 1;
+    match upto.checked_sub(1) {
+        Some(last) if last >= next && is_trigger(&actions[last]) => last,
+        _ => upto,
     }
-    start
 }
 
-/// Início dos atalhos seguidos que trocaram o foco (Alt+Tab, SUPER+N...).
+/// Só o último atalho troca o foco (Alt+Tab, SUPER+N...); os anteriores ficam como gravados.
 fn focus_cause(actions: &[Action], next: usize, upto: usize) -> usize {
-    let mut start = upto;
-    while start > next
-        && actions[start - 1].kind == ActionKind::Combo
-        && (start == upto || close(&actions[start - 1], &actions[start]))
-    {
-        start -= 1;
+    match upto.checked_sub(1) {
+        Some(last) if last >= next && actions[last].kind == ActionKind::Combo => last,
+        _ => upto,
     }
-    start
+}
+
+fn is_trigger(action: &Action) -> bool {
+    matches!(action.kind, ActionKind::Combo | ActionKind::Click)
 }
 
 fn close(before: &Action, after: &Action) -> bool {
@@ -455,6 +464,28 @@ mod tests {
         ];
         let draft = build(&actions, &events);
         assert_eq!(draft.render(), vec!["workspace 5", "sleep 1900ms", "scroll 1"]);
+    }
+
+    #[test]
+    fn quick_actions_before_a_change_stay_recorded() {
+        let c = Clock(Instant::now());
+        let actions = vec![c.combo(0, "CTRL+S"), c.combo(300, "CTRL+C"), c.combo(600, "SUPER+3")];
+        let events = vec![focused(c.at(700), Some(seen("k", "kitty", "3")), "3", true)];
+        let draft = build(&actions, &events);
+        assert_eq!(draft.render(), vec!["key CTRL+S", "sleep 300ms", "key CTRL+C", "sleep 300ms", "focus class=kitty"]);
+
+        let actions = vec![c.combo(0, "CTRL+S"), c.combo(300, "SUPER"), c.text(500, "zen"), c.combo(900, "RETURN")];
+        let events = vec![DesktopEvent {
+            at: c.at(1500),
+            change: Change::Opened {
+                window: seen("z", "zen", "6"),
+                command: Some("zen-browser".into()),
+                others: false,
+                new_process: true,
+            },
+        }];
+        let draft = build(&actions, &events);
+        assert_eq!(draft.render(), vec!["key CTRL+S", "sleep 300ms", "launch zen-browser workspace=6 class=zen"]);
     }
 
     #[test]

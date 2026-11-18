@@ -17,7 +17,7 @@ pub const SYNTAX: &[&str] = &[
     "focus class=REGEX [nth=N] [timeout=30s]   foca a janela do app (troca de workspace se preciso)",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
     "click [left|right|middle] [hold=CTRL] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
-    "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y to=X,Y [duration=300ms]",
+    "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]",
     "hold SUPER | mouse_right [X,Y]   release SUPER | mouse_right   move X,Y [duration=300ms]",
     "call outra_rotina      # comentário",
     "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
@@ -74,13 +74,15 @@ pub enum Step {
         target: ClickTarget,
         duration: Duration,
     },
-    /// Segura as teclas e o botão em `from`, arrasta até `to` e solta tudo.
+    /// Segura as teclas e o botão em `from`, arrasta por `via` até `to` e solta tudo.
     Drag {
         button: Button,
         hold: Vec<Key>,
         /// Janela (class, nth) das coordenadas; sem ela, são absolutas.
         window: Option<WindowRef>,
         from: (i32, i32),
+        /// Pontos intermediários e quando passar por eles, contando do início.
+        via: Vec<Waypoint>,
         to: (i32, i32),
         duration: Duration,
     },
@@ -151,6 +153,9 @@ pub struct ClickTarget {
 
 /// Class da janela e qual delas (`nth` conta por ordem de abertura, a partir de 1).
 pub type WindowRef = (String, usize);
+
+/// Ponto de um trajeto e o instante, desde o início, em que o cursor passa por ele.
+pub type Waypoint = (Duration, (i32, i32));
 
 /// Linha do script com o número original, para mensagens de erro.
 #[derive(Debug, Clone)]
@@ -325,9 +330,29 @@ fn parse_drag(options: &mut Options) -> Result<Step> {
     let hold = parse_hold_keys(options)?;
     let window = parse_window(options)?;
     let from = parse_point(&options.required("from")?)?;
+    let via = options.take("via").map_or(Ok(Vec::new()), |raw| parse_via(&raw))?;
     let to = parse_point(&options.required("to")?)?;
     let duration = parse_optional_duration(options, "duration", DEFAULT_DRAG_DURATION)?;
-    Ok(Step::Drag { button, hold, window, from, to, duration })
+    if via.last().is_some_and(|(at, _)| *at > duration) {
+        bail!("via passa do fim do arrasto (duration={})", format_duration(duration));
+    }
+    Ok(Step::Drag { button, hold, window, from, via, to, duration })
+}
+
+/// `X,Y@TEMPO;X,Y@TEMPO...`, com os tempos em ordem crescente.
+fn parse_via(raw: &str) -> Result<Vec<Waypoint>> {
+    let mut via: Vec<Waypoint> = Vec::new();
+    for part in raw.split(';') {
+        let (point, at) = part
+            .split_once('@')
+            .ok_or_else(|| anyhow!("ponto do via deve ser X,Y@TEMPO: {part}"))?;
+        let at = parse_duration(at)?;
+        if via.last().is_some_and(|(last, _)| at < *last) {
+            bail!("tempos do via fora de ordem: {part}");
+        }
+        via.push((at, parse_point(point)?));
+    }
+    Ok(via)
 }
 
 /// `hold TECLA` ou `hold mouse_BOTÃO [X,Y | window=CLASS [nth=N] at=X,Y]`.
@@ -624,13 +649,18 @@ impl fmt::Display for Step {
                 }
                 Ok(())
             }
-            Step::Drag { button, hold, window, from, to, duration } => {
+            Step::Drag { button, hold, window, from, via, to, duration } => {
                 write!(f, "drag {}", button.name())?;
                 write_hold(f, hold)?;
                 if let Some((class, nth)) = window {
                     write_window(f, class, *nth)?;
                 }
-                write!(f, " from={},{} to={},{}", from.0, from.1, to.0, to.1)?;
+                write!(f, " from={},{}", from.0, from.1)?;
+                for (index, (at, (x, y))) in via.iter().enumerate() {
+                    let lead = if index == 0 { " via=" } else { ";" };
+                    write!(f, "{lead}{x},{y}@{}", format_duration(*at))?;
+                }
+                write!(f, " to={},{}", to.0, to.1)?;
                 if *duration != DEFAULT_DRAG_DURATION {
                     write!(f, " duration={}", format_duration(*duration))?;
                 }
@@ -769,6 +799,7 @@ mod tests {
                 hold: vec![Key::LEFTMETA],
                 window: None,
                 from: (800, 400),
+                via: Vec::new(),
                 to: (800, 700),
                 duration: DEFAULT_DRAG_DURATION,
             }
@@ -781,11 +812,23 @@ mod tests {
     }
 
     #[test]
+    fn drag_path_keeps_back_and_forth() {
+        let line = "drag left from=0,0 via=50,0@100ms;20,0@250ms to=30,0 duration=400ms";
+        let step = parse_line(line).unwrap().step;
+        let Step::Drag { via, .. } = &step else { panic!("{step:?}") };
+        assert_eq!(via, &[(Duration::from_millis(100), (50, 0)), (Duration::from_millis(250), (20, 0))]);
+        assert_eq!(step.to_string(), line);
+    }
+
+    #[test]
     fn rejects_bad_holds_and_drags() {
         assert!(parse("hold SUPER 1,1").is_err(), "teclas não têm posição");
         assert!(parse("hold mouse_side").is_err());
         assert!(parse("hold mouse_left window=kitty").is_err(), "window sem at");
         assert!(parse("drag from=1,1").is_err(), "drag sem to");
+        assert!(parse("drag from=1,1 via=5,5@200ms;3,3@100ms to=2,2").is_err(), "via fora de ordem");
+        assert!(parse("drag from=1,1 via=5,5@1s to=2,2 duration=500ms").is_err(), "via depois do fim");
+        assert!(parse("drag from=1,1 via=5,5 to=2,2").is_err(), "via sem tempo");
         assert!(parse("move").is_err());
     }
 

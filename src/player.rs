@@ -7,7 +7,7 @@ use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME};
 use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
 use crate::platform::{Desktop, VirtualInput};
 use crate::progress::{self, Progress};
-use crate::script::{ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, WindowRef, parse_steps};
+use crate::script::{ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, Waypoint, WindowRef, parse_steps};
 use crate::keys::Key;
 use crate::utils::log;
 
@@ -160,15 +160,19 @@ impl<'a> Player<'a> {
                 let from = if duration.is_zero() { to } else { desktop.cursor_pos()? };
                 self.glide(from, to, *duration)
             }
-            Step::Drag { button, hold, window, from, to, duration } => {
+            Step::Drag { button, hold, window, from, via, to, duration } => {
                 let origin = window_origin(desktop, window.as_ref(), timeout)?;
-                let start = (origin.0 + from.0, origin.1 + from.1);
-                let end = (origin.0 + to.0, origin.1 + to.1);
+                let shift = |(x, y): (i32, i32)| (origin.0 + x, origin.1 + y);
+                let path: Vec<Waypoint> = std::iter::once((Duration::ZERO, *from))
+                    .chain(via.iter().copied())
+                    .chain(std::iter::once((*duration, *to)))
+                    .map(|(at, point)| (at, shift(point)))
+                    .collect();
                 self.scoped(|player| {
                     player.press_keys(hold)?;
-                    player.move_and_settle(start)?;
+                    player.move_and_settle(path[0].1)?;
                     player.press(Input::Mouse(*button))?;
-                    player.glide(start, end, *duration)
+                    player.trace(&path)
                 })
             }
         }
@@ -221,22 +225,26 @@ impl<'a> Player<'a> {
 
     /// Leva o cursor de `from` a `to` ao longo de `duration` (direto, sem duração).
     fn glide(&self, from: (i32, i32), to: (i32, i32), duration: Duration) -> Result<()> {
-        let frames = (duration.as_millis() / MOVE_FRAME.as_millis()).max(1) as i32;
-        if frames == 1 {
-            return self.desktop.move_cursor(to.0, to.1);
-        }
+        self.trace(&[(Duration::ZERO, from), (duration, to)])
+    }
+
+    /// Percorre o trajeto respeitando quando passar por cada ponto.
+    fn trace(&self, path: &[Waypoint]) -> Result<()> {
+        let Some(&(total, end)) = path.last() else { return Ok(()) };
         let start = Instant::now();
-        let mut last = from;
-        for frame in 1..=frames {
-            let point = (from.0 + (to.0 - from.0) * frame / frames, from.1 + (to.1 - from.1) * frame / frames);
+        let mut last = path[0].1;
+        let mut elapsed = MOVE_FRAME;
+        while elapsed < total {
+            let point = position_on(path, elapsed);
             if point != last {
                 self.desktop.move_cursor(point.0, point.1)?;
                 last = point;
             }
-            if frame < frames {
-                let deadline = start + MOVE_FRAME * frame as u32;
-                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
-            }
+            std::thread::sleep((start + elapsed).saturating_duration_since(Instant::now()));
+            elapsed += MOVE_FRAME;
+        }
+        if last != end {
+            self.desktop.move_cursor(end.0, end.1)?;
         }
         Ok(())
     }
@@ -288,4 +296,30 @@ fn window_origin(desktop: &Desktop, window: Option<&WindowRef>, timeout: Duratio
     std::thread::sleep(CLICK_MOVE_SETTLE);
     let found = nth_window(desktop, class, *nth, timeout)?;
     Ok((found.at[0], found.at[1]))
+}
+
+/// Posição no trajeto num instante, interpolando entre os pontos vizinhos.
+fn position_on(path: &[Waypoint], at: Duration) -> (i32, i32) {
+    let Some(next) = path.iter().position(|(t, _)| *t >= at) else { return path[path.len() - 1].1 };
+    let Some(prev) = next.checked_sub(1) else { return path[next].1 };
+    let ((t0, (x0, y0)), (t1, (x1, y1))) = (path[prev], path[next]);
+    let span = (t1 - t0).as_secs_f64();
+    let k = if span > 0.0 { (at - t0).as_secs_f64() / span } else { 1.0 };
+    let lerp = |a: i32, b: i32| a + ((b - a) as f64 * k).round() as i32;
+    (lerp(x0, x1), lerp(y0, y1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_goes_past_and_comes_back() {
+        let ms = Duration::from_millis;
+        let path = [(ms(0), (0, 0)), (ms(100), (100, 0)), (ms(300), (60, 20))];
+        assert_eq!(position_on(&path, ms(50)), (50, 0));
+        assert_eq!(position_on(&path, ms(100)), (100, 0));
+        assert_eq!(position_on(&path, ms(200)), (80, 10));
+        assert_eq!(position_on(&path, ms(999)), (60, 20));
+    }
 }

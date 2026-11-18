@@ -1,16 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::constants::{DESKTOP_POLL, DRAG_THRESHOLD, RECORD_COUNTDOWN_SECS, RECORDED_DRAG_MAX, RECORDED_DRAG_MIN};
+use crate::constants::{
+    CURSOR_HISTORY, CURSOR_SAMPLE, DESKTOP_POLL, DRAG_PATH_TOLERANCE, DRAG_THRESHOLD, RECORD_COUNTDOWN_SECS,
+    RECORDED_DRAG_MIN,
+};
 use crate::draft::{self, Action, ActionKind, Change, DesktopEvent, Draft, Seen};
 use crate::keys::{Key, MODIFIERS, is_modifier, is_shift, is_super, key_to_char};
 use crate::launcher::class_and_nth;
 use crate::platform::{Desktop, RawInput, Window, listen_input};
-use crate::script::{Button, ClickTarget, Step};
+use crate::script::{Button, ClickTarget, Step, Waypoint};
 
 /// Atalhos da gravação (sempre com SUPER).
 const PAUSE_KEY: Key = Key::F9;
@@ -73,23 +76,17 @@ fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft
     let start = Instant::now();
     let _ = sender.send(RecordEvent::Started);
 
-    let mut recorder = Recorder::new(&desktop, sender);
-    let mut watcher = desktop.manager().map(|_| Watcher::new(&desktop));
+    let desktop_events = desktop.manager().map(|_| watch_desktop());
+    let mut recorder = Recorder::new(&desktop, sender, Track::start());
     while !stop.load(Ordering::Relaxed) {
-        if let Some(watcher) = watcher.as_mut()
-            && watcher.last_poll.elapsed() >= DESKTOP_POLL
-        {
-            for event in watcher.poll() {
-                if !recorder.paused {
-                    let _ = sender.send(RecordEvent::Desktop(describe_change(&event.change)));
-                    recorder.changes.push(event);
-                }
+        for event in desktop_events.iter().flat_map(|feed| feed.events.try_iter()) {
+            if !recorder.paused {
+                let _ = sender.send(RecordEvent::Desktop(describe_change(&event.change)));
+                recorder.changes.push(event);
             }
         }
-        let wait = watcher
-            .as_ref()
-            .map_or(STOP_POLL, |w| DESKTOP_POLL.saturating_sub(w.last_poll.elapsed()).min(STOP_POLL));
-        let (time, input) = match receiver.recv_timeout(wait) {
+        recorder.sync_track();
+        let (time, input) = match receiver.recv_timeout(STOP_POLL) {
             Ok(received) => received,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -97,6 +94,9 @@ fn record(sender: &mpsc::Sender<RecordEvent>, stop: &AtomicBool) -> Result<Draft
         if time >= start && recorder.handle(time, input) == Flow::Stop {
             break;
         }
+    }
+    if !recorder.paused {
+        recorder.changes.extend(desktop_events.iter().flat_map(|feed| feed.events.try_iter()));
     }
     recorder.flush();
     Ok(draft::build(&recorder.actions, &recorder.changes))
@@ -111,13 +111,52 @@ fn describe_change(change: &Change) -> String {
     }
 }
 
+/// Mudanças do desktop vindas de uma thread; ela para quando isto é descartado.
+struct DesktopFeed {
+    events: mpsc::Receiver<DesktopEvent>,
+    done: Arc<AtomicBool>,
+}
+
+impl Drop for DesktopFeed {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Consulta o desktop numa thread própria a cada aviso de mudança, ou de tempos em tempos.
+fn watch_desktop() -> DesktopFeed {
+    let (sender, events) = mpsc::channel();
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&done);
+    std::thread::spawn(move || {
+        let desktop = Desktop::connect();
+        let changes = desktop.watch_changes();
+        let mut watcher = Watcher::new(&desktop);
+        while !flag.load(Ordering::Relaxed) {
+            let at = match changes.as_ref().map(|c| c.recv_timeout(DESKTOP_POLL)) {
+                Some(Ok(at)) => at,
+                Some(Err(mpsc::RecvTimeoutError::Timeout)) => Instant::now(),
+                Some(Err(mpsc::RecvTimeoutError::Disconnected)) | None => {
+                    std::thread::sleep(DESKTOP_POLL);
+                    Instant::now()
+                }
+            };
+            for event in watcher.poll(at) {
+                if sender.send(event).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    DesktopFeed { events, done }
+}
+
 /// Acompanha janelas, foco e workspace consultando o desktop.
 struct Watcher<'a> {
     desktop: &'a Desktop,
     known: HashMap<String, Window>,
     active: Option<String>,
     workspace: String,
-    last_poll: Instant,
 }
 
 impl<'a> Watcher<'a> {
@@ -127,17 +166,14 @@ impl<'a> Watcher<'a> {
             known: HashMap::new(),
             active: None,
             workspace: String::new(),
-            last_poll: Instant::now(),
         };
-        watcher.poll();
+        watcher.poll(Instant::now());
         watcher
     }
 
     /// Mudanças desde a última consulta (na primeira, só tira a foto).
-    fn poll(&mut self) -> Vec<DesktopEvent> {
+    fn poll(&mut self, at: Instant) -> Vec<DesktopEvent> {
         let first = self.workspace.is_empty();
-        self.last_poll = Instant::now();
-        let at = self.last_poll;
         let Ok(windows) = self.desktop.windows() else { return Vec::new() };
         let mut events = Vec::new();
         let opened = windows.iter().filter(|w| !first && !self.known.contains_key(&w.id));
@@ -200,10 +236,75 @@ struct Press {
     modifiers: Vec<Key>,
 }
 
+/// Posições do cursor lidas numa thread, com o instante de cada leitura.
+struct Track {
+    samples: mpsc::Receiver<(Instant, (i32, i32))>,
+    points: VecDeque<(Instant, (i32, i32))>,
+    latest: Option<Instant>,
+}
+
+impl Track {
+    fn start() -> Self {
+        let (sender, samples) = mpsc::channel();
+        std::thread::spawn(move || {
+            let desktop = Desktop::connect();
+            while let Ok(point) = desktop.cursor_pos() {
+                if sender.send((Instant::now(), point)).is_err() {
+                    return;
+                }
+                std::thread::sleep(CURSOR_SAMPLE);
+            }
+        });
+        Self { samples, points: VecDeque::new(), latest: None }
+    }
+
+    fn push(&mut self, (time, point): (Instant, (i32, i32))) {
+        self.latest = Some(time);
+        if self.points.back().is_none_or(|(_, last)| *last != point) {
+            self.points.push_back((time, point));
+        }
+    }
+
+    fn drain(&mut self) {
+        while let Ok(sample) = self.samples.try_recv() {
+            self.push(sample);
+        }
+    }
+
+    /// Espera a leitura que cobre o instante, se a thread ainda estiver lendo.
+    fn catch_up(&mut self, time: Instant) {
+        self.drain();
+        while self.latest.is_none_or(|latest| latest < time) {
+            match self.samples.recv_timeout(CURSOR_SAMPLE * 4) {
+                Ok(sample) => self.push(sample),
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Onde o cursor estava no instante.
+    fn at(&self, time: Instant) -> Option<(i32, i32)> {
+        self.points.iter().rev().find(|(t, _)| *t <= time).or(self.points.front()).map(|(_, point)| *point)
+    }
+
+    /// Posições lidas estritamente entre os dois instantes.
+    fn between(&self, from: Instant, to: Instant) -> impl Iterator<Item = (Instant, (i32, i32))> + '_ {
+        self.points.iter().copied().filter(move |(t, _)| *t > from && *t < to)
+    }
+
+    /// Esquece o que veio antes do instante, mantendo a última posição anterior a ele.
+    fn forget_before(&mut self, cutoff: Instant) {
+        while self.points.get(1).is_some_and(|(t, _)| *t <= cutoff) {
+            self.points.pop_front();
+        }
+    }
+}
+
 /// Acumula eventos crus em ações legíveis.
 struct Recorder<'a> {
     desktop: &'a Desktop,
     sender: &'a mpsc::Sender<RecordEvent>,
+    track: Track,
     actions: Vec<Action>,
     changes: Vec<DesktopEvent>,
     held: Vec<Key>,
@@ -216,10 +317,11 @@ struct Recorder<'a> {
 }
 
 impl<'a> Recorder<'a> {
-    fn new(desktop: &'a Desktop, sender: &'a mpsc::Sender<RecordEvent>) -> Self {
+    fn new(desktop: &'a Desktop, sender: &'a mpsc::Sender<RecordEvent>, track: Track) -> Self {
         Self {
             desktop,
             sender,
+            track,
             actions: Vec::new(),
             changes: Vec::new(),
             held: Vec::new(),
@@ -229,6 +331,18 @@ impl<'a> Recorder<'a> {
             text_span: None,
             scroll: None,
             paused: false,
+        }
+    }
+
+    /// Lê as posições novas e descarta as antigas que nenhum clique vai precisar.
+    fn sync_track(&mut self) {
+        self.track.drain();
+        let cutoff = match &self.press {
+            Some(press) => Some(press.time),
+            None => Instant::now().checked_sub(CURSOR_HISTORY),
+        };
+        if let Some(cutoff) = cutoff {
+            self.track.forget_before(cutoff);
         }
     }
 
@@ -324,7 +438,8 @@ impl<'a> Recorder<'a> {
             )));
             return;
         }
-        let Ok((x, y)) = desktop.cursor_pos() else { return };
+        self.track.catch_up(time);
+        let Some((x, y)) = self.track.at(time).or_else(|| desktop.cursor_pos().ok()) else { return };
         let windows = desktop.windows().unwrap_or_default();
         let under = windows
             .iter()
@@ -342,20 +457,29 @@ impl<'a> Recorder<'a> {
         self.press = Some(Press { button, time, screen: (x, y), target, modifiers });
     }
 
-    /// Botão solto: arrasto se o cursor andou, senão clique (com os modificadores segurados).
+    /// Botão solto: arrasto com o trajeto inteiro se o cursor saiu do lugar, senão clique.
     fn on_button_up(&mut self, time: Instant, button: Button) {
         let Some(press) = self.press.take_if(|press| press.button == button) else { return };
-        let (x, y) = self.desktop.cursor_pos().unwrap_or(press.screen);
-        let moved = (x - press.screen.0).abs().max((y - press.screen.1).abs()) > DRAG_THRESHOLD;
+        self.track.catch_up(time);
+        let end = self.track.at(time).unwrap_or(press.screen);
+        let since = |t: Instant| whole_ms(t.saturating_duration_since(press.time));
+        let trail: Vec<Waypoint> = std::iter::once((Duration::ZERO, press.screen))
+            .chain(self.track.between(press.time, time).map(|(t, point)| (since(t), point)))
+            .chain(std::iter::once((since(time), end)))
+            .collect();
+        let (sx, sy) = press.screen;
+        let moved = trail.iter().any(|(_, (x, y))| (x - sx).abs().max((y - sy).abs()) > DRAG_THRESHOLD);
         let hold = press.modifiers;
         if !moved {
             self.push(press.time, time, ActionKind::Click, Step::Click { button, hold, target: press.target });
             return;
         }
         let ClickTarget { window, x: from_x, y: from_y } = press.target;
-        let (from, to) = ((from_x, from_y), (from_x + x - press.screen.0, from_y + y - press.screen.1));
-        let elapsed = time.saturating_duration_since(press.time).clamp(RECORDED_DRAG_MIN, RECORDED_DRAG_MAX);
-        let step = Step::Drag { button, hold, window, from, to, duration: draft::round_recorded(elapsed) };
+        let shift = |(x, y): (i32, i32)| (x - sx + from_x, y - sy + from_y);
+        let kept = simplify(&trail, DRAG_PATH_TOLERANCE);
+        let via = kept[1..kept.len() - 1].iter().map(|&i| (trail[i].0, shift(trail[i].1))).collect();
+        let duration = since(time).max(RECORDED_DRAG_MIN);
+        let step = Step::Drag { button, hold, window, from: (from_x, from_y), via, to: shift(end), duration };
         self.push(press.time, time, ActionKind::Click, step);
     }
 
@@ -400,5 +524,59 @@ impl<'a> Recorder<'a> {
     fn push(&mut self, start: Instant, end: Instant, kind: ActionKind, step: Step) {
         let _ = self.sender.send(RecordEvent::Step(step.to_string()));
         self.actions.push(Action { start, end, kind, step });
+    }
+}
+
+fn whole_ms(duration: Duration) -> Duration {
+    Duration::from_millis(duration.as_millis() as u64)
+}
+
+/// Pontos que mantêm o trajeto, no tempo, a até `tolerance` pixels do gravado.
+fn simplify(trail: &[Waypoint], tolerance: f64) -> Vec<usize> {
+    let mut keep = vec![false; trail.len()];
+    let mut spans = vec![(0, trail.len().saturating_sub(1))];
+    while let Some((a, b)) = spans.pop() {
+        keep[a] = true;
+        keep[b] = true;
+        let worst = (a + 1..b)
+            .map(|i| (i, drift(trail[i], trail[a], trail[b])))
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        if let Some((i, _)) = worst.filter(|(_, d)| *d > tolerance) {
+            spans.extend([(a, i), (i, b)]);
+        }
+    }
+    keep.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i).collect()
+}
+
+/// Distância entre o ponto e onde o trecho reto `a`→`b` estaria no mesmo instante.
+fn drift((t, (x, y)): Waypoint, (ta, (xa, ya)): Waypoint, (tb, (xb, yb)): Waypoint) -> f64 {
+    let span = (tb - ta).as_secs_f64();
+    let k = if span > 0.0 { (t - ta).as_secs_f64() / span } else { 0.0 };
+    let ex = f64::from(xa) + f64::from(xb - xa) * k;
+    let ey = f64::from(ya) + f64::from(yb - ya) * k;
+    (f64::from(x) - ex).hypot(f64::from(y) - ey)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simplify_keeps_overshoot_and_pauses() {
+        let ms = Duration::from_millis;
+        let trail: Vec<Waypoint> = [
+            (0, (0, 0)),
+            (50, (50, 0)),
+            (100, (100, 0)),
+            (150, (80, 0)),
+            (200, (60, 0)),
+            (700, (60, 0)),
+            (750, (60, 50)),
+        ]
+        .into_iter()
+        .map(|(t, p)| (ms(t), p))
+        .collect();
+        let kept: Vec<_> = simplify(&trail, 2.0).into_iter().map(|i| trail[i]).collect();
+        assert_eq!(kept, vec![trail[0], trail[2], trail[4], trail[5], trail[6]]);
     }
 }

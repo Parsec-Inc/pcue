@@ -36,6 +36,11 @@ impl Desktop {
         Self
     }
 
+    /// Sem aviso de mudanças no Windows.
+    pub fn watch_changes(&self) -> Option<std::sync::mpsc::Receiver<Instant>> {
+        None
+    }
+
     /// Nome do gerenciador de janelas controlado.
     pub fn manager(&self) -> Option<&'static str> {
         Some("Windows")
