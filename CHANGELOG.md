@@ -1,3 +1,10 @@
+## 0.7.0 (2026-11-18)
+
+### Feat
+
+- **tui**: revisão da gravação edita (e) e separa (s) passos, além de apagar
+- parâmetros de rotina com {nome} nos passos, pcue run/call nome=valor e a TUI perguntando os valores
+
 ## 0.6.0 (2026-11-18)
 
 ### Feat
