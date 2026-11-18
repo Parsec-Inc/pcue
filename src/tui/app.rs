@@ -10,7 +10,7 @@ use ratatui::layout::{Position, Rect};
 
 use super::anim::Slide;
 use super::text_input::TextInput;
-use crate::config::{Config, Routine, Trigger, validate_name};
+use crate::config::{Config, Routine, Trigger, params_label, parse_params, validate_name};
 use crate::constants::{BOOT_EVENT, BUILTIN_EVENTS, DEFAULT_EDITOR, DESKTOP_MARK, TUI_RUN_DELAY_MS};
 use crate::history::{self, Run};
 use crate::progress::{self, Progress};
@@ -18,7 +18,7 @@ use crate::draft::Draft;
 use crate::recorder::{self, RecordEvent};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
-use crate::script::{SYNTAX, is_comment, parse_line, parse_steps};
+use crate::script::{Arg, SYNTAX, is_comment, parse_line};
 use crate::utils::{expand_home, log_path, runtime_dir};
 use crate::platform::{self as install, Desktop};
 use crate::update::{self, Release, UpdateEvent};
@@ -111,6 +111,8 @@ pub enum InputPurpose {
     CustomEvent(Option<usize>),
     Export,
     Import,
+    Params,
+    RunArg(Selection),
 }
 
 /// O que fazer com a opção escolhida.
@@ -195,6 +197,10 @@ pub struct App {
     pub trigger_selected: usize,
     pub modal: Option<Modal>,
     pub modal_at: Instant,
+    /// Valores já informados para a execução que está sendo montada.
+    run_args: Vec<Arg>,
+    /// Último valor usado em cada parâmetro (rotina, parâmetro), só nesta sessão.
+    last_args: HashMap<(String, String), String>,
     pub status: Option<Status>,
     pub runs: Vec<Run>,
     history_modified: Option<SystemTime>,
@@ -239,6 +245,8 @@ impl App {
             trigger_selected: 0,
             modal: None,
             modal_at: Instant::now(),
+            run_args: Vec::new(),
+            last_args: HashMap::new(),
             status: None,
             runs,
             history_modified: history::modified(),
@@ -577,6 +585,10 @@ impl App {
                 self.open_input("Renomear rotina", "novo nome", &name, InputPurpose::RenameRoutine);
             }
             KeyCode::Char('D') => self.duplicate_selected(),
+            KeyCode::Char('P') => {
+                let value = self.routine().map(|r| params_label(&r.params)).unwrap_or_default();
+                self.open_input("Parâmetros", PARAMS_HINT, &value, InputPurpose::Params);
+            }
             KeyCode::Char('X') => {
                 let name = self.routine().map(|r| r.name.clone()).unwrap_or_default();
                 self.open_input(
@@ -962,9 +974,10 @@ impl App {
                 KeyCode::Esc => self.modal = None,
                 KeyCode::Enter => {
                     let (purpose, value) = (*purpose, input.value().trim().to_string());
+                    let opened = self.modal_at;
                     match self.apply_input(purpose, &value) {
                         Ok(()) => {
-                            if matches!(self.modal, Some(Modal::Input { .. })) {
+                            if self.modal_at == opened {
                                 self.modal = None;
                             }
                         }
@@ -1006,7 +1019,7 @@ impl App {
                 })?;
             }
             InputPurpose::AddStep => {
-                let line = check_step(value)?;
+                let line = check_step(self.routine(), value)?;
                 let at = self.routine().map_or(0, |r| (self.step_selected + 1).min(r.steps.len()));
                 self.mutate_routine(|r| {
                     r.steps.insert(at, line);
@@ -1014,7 +1027,7 @@ impl App {
                 self.step_selected = at;
             }
             InputPurpose::EditStep(index) => {
-                let line = check_step(value)?;
+                let line = check_step(self.routine(), value)?;
                 self.mutate_routine(|r| {
                     r.steps[index] = line;
                 })?;
@@ -1034,6 +1047,23 @@ impl App {
                         event: value.to_string(),
                     },
                 )?;
+            }
+            InputPurpose::Params => {
+                let params = parse_params(value);
+                self.mutate_routine(|r| r.params = params)?;
+            }
+            InputPurpose::RunArg(selection) => {
+                let routine = self.routine().context("nenhuma rotina")?;
+                let param = routine.params.get(self.run_args.len()).context("parâmetro a mais")?;
+                let value = match (value.is_empty(), &param.default) {
+                    (true, Some(default)) => default.clone(),
+                    (true, None) => bail!("informe um valor para {}", param.name),
+                    (false, _) => value.to_string(),
+                };
+                let key = (routine.name.clone(), param.name.clone());
+                self.run_args.push((param.name.clone(), value.clone()));
+                self.last_args.insert(key, value);
+                self.continue_run(selection);
             }
             InputPurpose::Export => {
                 let name = self.routine().map(|r| r.name.clone()).context("nenhuma rotina")?;
@@ -1249,7 +1279,27 @@ impl App {
                 ConfirmAction::SaveAndRun(selection),
             );
         }
-        match spawn_run(&name, "manual", TUI_RUN_DELAY_MS, selection) {
+        self.run_args.clear();
+        self.continue_run(selection);
+    }
+
+    /// Pergunta o próximo parâmetro que falta ou, com todos em mãos, roda.
+    fn continue_run(&mut self, selection: Selection) {
+        let Some(routine) = self.routine() else { return };
+        let name = routine.name.clone();
+        if let Some(param) = routine.params.get(self.run_args.len()) {
+            let (index, total) = (self.run_args.len() + 1, routine.params.len());
+            let last = self.last_args.get(&(name.clone(), param.name.clone()));
+            let value = last.or(param.default.as_ref()).cloned().unwrap_or_default();
+            let hint = match &param.default {
+                Some(default) => format!("valor de {{{}}} nos passos · vazio usa o padrão: {default}", param.name),
+                None => format!("valor de {{{}}} nos passos", param.name),
+            };
+            let title = format!("Rodar '{name}' · {} ({index}/{total})", param.name);
+            return self.open_input(&title, &hint, &value, InputPurpose::RunArg(selection));
+        }
+        let args = std::mem::take(&mut self.run_args);
+        match spawn_run(&name, "manual", TUI_RUN_DELAY_MS, selection, &args) {
             Ok(child) => {
                 self.children.push(child);
                 self.info(format!(
@@ -1466,7 +1516,9 @@ impl App {
             .skip_while(|l| l.is_empty())
             .collect();
         let steps = trim_trailing_empty(steps);
-        if let Err(err) = parse_steps(&steps) {
+        let mut probe = self.routine().cloned().context("nenhuma rotina selecionada")?;
+        probe.steps.clone_from(&steps);
+        if let Err(err) = probe.validate() {
             self.editor_draft = Some(steps.join("\n"));
             bail!("{err:#} (E reabre o rascunho)");
         }
@@ -1479,13 +1531,16 @@ impl App {
     }
 }
 
-/// Valida um passo digitado e devolve a linha a guardar.
-fn check_step(value: &str) -> Result<String> {
+/// Valida um passo digitado na rotina e devolve a linha a guardar.
+fn check_step(routine: Option<&Routine>, value: &str) -> Result<String> {
     if value.is_empty() {
         bail!("passo vazio");
     }
     if !is_comment(value) {
-        parse_line(value)?;
+        match routine {
+            Some(routine) => routine.check_line(value)?,
+            None => drop(parse_line(value)?),
+        }
     }
     Ok(value.to_string())
 }
@@ -1527,4 +1582,6 @@ fn moved(index: usize, len: usize, key: KeyCode) -> Option<usize> {
 }
 
 const DAILY_HINT: &str = "HH:MM e dias opcionais, ex.: 09:00 seg,ter,qua,qui,sex";
+const PARAMS_HINT: &str =
+    "nomes separados por vírgula, padrão opcional: pessoa, mensagem=oi · nos passos: {pessoa} · fora: pcue run rotina pessoa=erick";
 const INTERVAL_HINT: &str = "ex.: 30m, 2h ou 1.5h (mínimo 1m)";

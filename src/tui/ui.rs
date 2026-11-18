@@ -13,7 +13,7 @@ use super::app::{App, CELEBRATE_FOR, Hit, Modal, Pane, RecPhase, Recording};
 use crate::constants::DESKTOP_MARK;
 use crate::draft::Draft;
 use super::sprites::{self, Sprite};
-use crate::config::{Routine, Trigger};
+use crate::config::{Routine, Trigger, params_label};
 use crate::schedule::describe_next;
 use crate::script::{SYNTAX, format_duration, is_comment};
 
@@ -304,6 +304,12 @@ fn draw_summary(frame: &mut Frame, area: Rect, app: &App, routine: &Routine) {
         Span::styled(routine.name.as_str(), Style::new().bold()),
         Span::styled(format!("  {} · {state} · {steps} passo(s)", routine.kind_label()), Style::new().fg(MUTED)),
     ])];
+    if !routine.params.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("parâmetros: ", Style::new().fg(MUTED)),
+            Span::styled(params_label(&routine.params), Style::new().fg(ACCENT)),
+        ]));
+    }
     lines.push(match app.last_run(&routine.name) {
         None => Line::styled("nunca executada", Style::new().fg(MUTED)),
         Some(run) => {
@@ -515,6 +521,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             list.extend([
                 ("n", "nova", c('n')),
                 ("D", "duplicar", c('D')),
+                ("P", "parâmetros", c('P')),
                 ("r", "renomear", c('r')),
                 ("d", "apagar", c('d')),
                 ("␣", "ativar", c(' ')),
@@ -1049,5 +1056,6 @@ const HELP_GENERAL: &[&str] = &[
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
     "  mudanças ficam pendentes até S (ou Ctrl+S) salvar · u descarta · sair com pendências pede confirmação",
+    "  P parâmetros: {nome} nos passos; ao rodar a TUI pergunta os valores (pcue run rotina nome=valor, call rotina nome=valor)",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];

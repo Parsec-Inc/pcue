@@ -6,9 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS};
+use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS, RESERVED_PARAMS};
 use crate::schedule::{Weekday, parse_clock};
-use crate::script::{self, parse_duration};
+use crate::script::{self, Arg, Line, is_comment, parse_duration};
 
 /// Arquivo de configuração completo.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -42,8 +42,18 @@ pub struct Routine {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<Param>,
     #[serde(default)]
     pub steps: Vec<String>,
+}
+
+/// Parâmetro de rotina, usado nos passos como `{nome}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Param {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 /// Quando uma rotina agendada dispara.
@@ -98,8 +108,29 @@ impl Routine {
             name: name.to_string(),
             enabled: true,
             triggers: Vec::new(),
+            params: Vec::new(),
             steps: Vec::new(),
         }
+    }
+
+    /// Valores de todos os parâmetros: os passados e, no resto, o padrão.
+    pub fn bind(&self, args: &[Arg]) -> Result<Vec<Arg>> {
+        if let Some((name, _)) = args.iter().find(|(name, _)| !self.params.iter().any(|p| p.name == *name)) {
+            bail!("'{}' não tem o parâmetro {name}", self.name);
+        }
+        self.params
+            .iter()
+            .map(|param| {
+                let given = args.iter().rev().find(|(name, _)| *name == param.name).map(|(_, v)| v);
+                let value = given.or(param.default.as_ref()).with_context(|| format!("falta o parâmetro {0} ({0}=VALOR)", param.name))?;
+                Ok((param.name.clone(), value.clone()))
+            })
+            .collect()
+    }
+
+    /// Passos prontos para rodar com os valores passados.
+    pub fn lines(&self, args: &[Arg]) -> Result<Vec<Line>> {
+        script::parse_steps_with(&self.steps, &self.bind(args)?)
     }
 
     /// Tem gatilhos, logo roda pelo daemon.
@@ -128,8 +159,35 @@ impl Routine {
         for trigger in &self.triggers {
             trigger.validate()?;
         }
-        script::parse_steps(&self.steps)?;
+        let mut names = HashSet::new();
+        for param in &self.params {
+            validate_name(&param.name).context("parâmetro inválido")?;
+            if RESERVED_PARAMS.contains(&param.name.as_str()) || !names.insert(param.name.as_str()) {
+                bail!("parâmetro '{}' repetido ou reservado", param.name);
+            }
+            if self.is_scheduled() && param.default.is_none() {
+                bail!("rotina agendada precisa de padrão para o parâmetro {}", param.name);
+            }
+        }
+        for (index, line) in self.steps.iter().enumerate().filter(|(_, l)| !is_comment(l)) {
+            self.check_line(line).with_context(|| format!("linha {}: {}", index + 1, line.trim()))?;
+        }
         Ok(())
+    }
+
+    /// Confere um passo com os padrões; com parâmetro sem padrão, só ao rodar.
+    pub fn check_line(&self, line: &str) -> Result<()> {
+        let defaults: Vec<Arg> = self
+            .params
+            .iter()
+            .filter_map(|p| p.default.clone().map(|value| (p.name.clone(), value)))
+            .collect();
+        match script::parse_line_with(line, &defaults) {
+            Err(_) if self.params.iter().any(|p| p.default.is_none() && line.contains(&format!("{{{}}}", p.name))) => {
+                Ok(())
+            }
+            other => other.map(|_| ()),
+        }
     }
 }
 
@@ -271,6 +329,27 @@ impl Config {
     }
 }
 
+/// Lê `pessoa, mensagem=padrão` (vírgulas separam os parâmetros).
+pub fn parse_params(raw: &str) -> Vec<Param> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| match part.split_once('=') {
+            Some((name, default)) => Param { name: name.trim().to_string(), default: Some(default.trim().to_string()) },
+            None => Param { name: part.to_string(), default: None },
+        })
+        .collect()
+}
+
+/// Parâmetros no formato que `parse_params` lê.
+pub fn params_label(params: &[Param]) -> String {
+    let label = |p: &Param| match &p.default {
+        Some(default) => format!("{}={default}", p.name),
+        None => p.name.clone(),
+    };
+    params.iter().map(label).collect::<Vec<_>>().join(", ")
+}
+
 /// Nomes de rotina e evento: minúsculas, dígitos, `-` e `_`.
 pub fn validate_name(name: &str) -> Result<()> {
     let ok = !name.is_empty()
@@ -290,6 +369,27 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn params_bind_with_defaults_and_validate() {
+        let mut routine = Routine::new("teams-msg");
+        routine.params = parse_params("pessoa, mensagem=safeeerrr");
+        routine.steps = vec!["type {pessoa}".into(), "sleep {pausa}".into(), "type {mensagem}".into()];
+        assert!(routine.validate().is_err(), "{{pausa}} não é parâmetro, então sleep {{pausa}} é inválido");
+        routine.steps[1] = "sleep 1s".into();
+        routine.validate().unwrap();
+        assert_eq!(params_label(&routine.params), "pessoa, mensagem=safeeerrr");
+
+        let args = routine.bind(&[("pessoa".into(), "erick".into())]).unwrap();
+        assert_eq!(args, vec![("pessoa".into(), "erick".into()), ("mensagem".into(), "safeeerrr".into())]);
+        assert!(routine.bind(&[]).is_err(), "pessoa não tem padrão");
+        assert!(routine.bind(&[("x".into(), "1".into())]).is_err(), "parâmetro desconhecido");
+
+        routine.triggers.push(Trigger::Event { event: "ping".into() });
+        assert!(routine.validate().is_err(), "agendada precisa de padrão");
+        routine.params = parse_params("repeat=1");
+        assert!(routine.validate().is_err(), "nome reservado");
+    }
 
     const SAMPLE: &str = r#"
         [[routine]]

@@ -10,7 +10,7 @@ use crate::history::{self, Run};
 use crate::platform::{self, Desktop};
 use crate::player::Player;
 use crate::progress;
-use crate::script::{Line, parse_steps};
+use crate::script::{Arg, Line};
 use crate::utils::{log, notify, runtime_dir, timestamp};
 
 /// Quais linhas executar, para depuração.
@@ -61,11 +61,11 @@ impl Selection {
 }
 
 /// Executa uma rotina neste processo e registra no histórico.
-pub fn run_routine(config: &Config, name: &str, trigger: &str, selection: Selection) -> Result<()> {
+pub fn run_routine(config: &Config, name: &str, trigger: &str, selection: Selection, args: &[Arg]) -> Result<()> {
     let routine = config
         .find(name)
         .with_context(|| format!("rotina '{name}' não existe"))?;
-    let lines = selection.apply(parse_steps(&routine.steps)?)?;
+    let lines = selection.apply(routine.lines(args)?)?;
     let _guard = RunGuard::acquire(name)?;
     let desktop = Desktop::connect();
     let trigger = match selection.label() {
@@ -109,11 +109,14 @@ pub fn spawn_run(
     trigger: &str,
     delay_ms: u64,
     selection: Selection,
+    args: &[Arg],
 ) -> std::io::Result<Child> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(["run", routine, "--trigger", trigger, "--delay-ms", &delay_ms.to_string()])
         .args(selection.args())
+        .arg("--")
+        .args(args.iter().map(|(name, value)| format!("{name}={value}")))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

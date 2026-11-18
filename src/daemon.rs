@@ -318,7 +318,7 @@ impl Daemon {
 
     /// Roda a rotina num processo filho.
     fn spawn(&mut self, routine: &str, trigger: &str) {
-        match spawn_run(routine, trigger, 0, Selection::All) {
+        match spawn_run(routine, trigger, 0, Selection::All, &[]) {
             Ok(child) => self.children.push(child),
             Err(err) => log(&format!("[{routine}] falha ao iniciar: {err}")),
         }

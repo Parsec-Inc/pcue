@@ -195,7 +195,7 @@ hold SUPER                      # ou mouse_left|mouse_right|mouse_middle [X,Y]
 move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
 release SUPER
 scroll -3
-call outra_rotina
+call outra_rotina [parâmetro=valor]
 # comentário
 ```
 
@@ -207,6 +207,28 @@ Qualquer passo aceita modificadores:
 | `repeat=N` | executa o passo N vezes |
 | `if_window=REGEX` | só executa se existir janela com essa class |
 | `unless_window=REGEX` | só executa se **não** existir janela com essa class |
+
+### Parâmetros
+
+Uma rotina pode receber valores na hora de rodar. Declare os parâmetros com
+`P` na TUI (`pessoa, mensagem=safeeerrr`: vírgulas separam, `=` dá um padrão)
+e use `{pessoa}` em qualquer passo. Para mandar mensagem a qualquer pessoa no
+Teams:
+
+```text
+focus class=teams
+key CTRL+ALT+E
+type {pessoa}
+key RETURN
+type {mensagem}
+key RETURN
+```
+
+Ao rodar pela TUI, ela pergunta cada valor (lembrando o último usado). Fora
+dela: `pcue run teams-msg pessoa=erick` (bom para um atalho do Hyprland) ou,
+dentro de outra rotina, `call teams-msg pessoa=erick`. Parâmetros sem padrão
+são obrigatórios; rotina agendada precisa de padrão em todos, porque o daemon
+roda sem perguntar.
 
 `focus` espera a janela existir e foca nela, trocando de workspace se
 precisar. É mais robusto que `key SUPER+N`, que depende de onde o foco está.
