@@ -69,6 +69,17 @@ pub enum Event {
     Named(String),
     #[cfg_attr(windows, allow(dead_code))]
     Notification(Notification),
+    Device(Device),
+}
+
+/// Dispositivo USB conectado ou desconectado.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Device {
+    /// Fabricante e produto; sem eles, o id.
+    pub name: String,
+    /// `vendor:product` em hexadecimal, ex. `18d1:4ee7`.
+    pub id: String,
+    pub removed: bool,
 }
 
 /// Notificação de um aplicativo.

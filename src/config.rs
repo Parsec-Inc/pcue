@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use regex::{Regex, RegexBuilder};
 
-use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS, NOTIFICATION_PARAMS, RESERVED_PARAMS};
-use crate::platform::Notification;
+use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS, DEVICE_PARAMS, NOTIFICATION_PARAMS, RESERVED_PARAMS};
+use crate::platform::Event;
 use crate::schedule::{Weekday, parse_clock};
 use crate::script::{self, Arg, Line, is_comment, parse_duration};
 
@@ -83,6 +83,13 @@ pub enum Trigger {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         body: String,
     },
+    /// Dispositivo USB conectado (ou desconectado, com `removed`); `name` é regex do nome ou do id.
+    Device {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        removed: bool,
+    },
 }
 
 /// Workspace alvo: número, `name:x` ou `special:x`.
@@ -155,9 +162,9 @@ impl Routine {
         if self.is_scheduled() { "agendada" } else { "livre" }
     }
 
-    /// Rotina ativa que reage ao evento.
-    pub fn listens_to(&self, event: &str) -> bool {
-        self.enabled && self.has_event(event)
+    /// Declara o parâmetro `name`?
+    pub fn has_param(&self, name: &str) -> bool {
+        self.params.iter().any(|p| p.name == name)
     }
 
     /// Tem gatilho para o evento, ativa ou não.
@@ -209,20 +216,27 @@ impl Trigger {
         matches!(self, Trigger::Event { event } if event == name)
     }
 
-    /// Gatilho de notificação que aceita esta notificação.
-    pub fn catches(&self, notification: &Notification) -> bool {
-        let Trigger::Notification { app, title, body } = self else {
-            return false;
-        };
-        [(app, &notification.app), (title, &notification.title), (body, &notification.body)]
-            .into_iter()
-            .all(|(filter, value)| filter.is_empty() || filter_regex(filter).is_ok_and(|re| re.is_match(value)))
+    /// O gatilho dispara com este evento?
+    pub fn catches(&self, event: &Event) -> bool {
+        match (self, event) {
+            (Trigger::Event { event }, Event::Named(name)) => event == name,
+            (Trigger::Notification { app, title, body }, Event::Notification(notification)) => {
+                [(app, &notification.app), (title, &notification.title), (body, &notification.body)]
+                    .into_iter()
+                    .all(|(filter, value)| accepts(filter, value))
+            }
+            (Trigger::Device { name, removed }, Event::Device(device)) => {
+                *removed == device.removed && (accepts(name, &device.name) || accepts(name, &device.id))
+            }
+            _ => false,
+        }
     }
 
     /// Parâmetros que o gatilho preenche ao disparar.
     pub fn provides(&self) -> &'static [&'static str] {
         match self {
             Trigger::Notification { .. } => &NOTIFICATION_PARAMS,
+            Trigger::Device { .. } => &DEVICE_PARAMS,
             _ => &[],
         }
     }
@@ -238,7 +252,7 @@ impl Trigger {
                 "texto" => &mut body,
                 other => bail!("filtro desconhecido '{other}' (app, titulo, texto)"),
             };
-            *slot = value.to_string();
+            *slot = unquote(value).to_string();
         }
         let trigger = Trigger::Notification { app, title, body };
         trigger.validate()?;
@@ -263,11 +277,9 @@ impl Trigger {
         match self {
             Trigger::Event { event } => validate_name(event).context("evento inválido"),
             Trigger::Notification { app, title, body } => {
-                for filter in [app, title, body].into_iter().filter(|f| !f.is_empty()) {
-                    filter_regex(filter).with_context(|| format!("filtro inválido: {filter}"))?;
-                }
-                Ok(())
+                [app, title, body].into_iter().try_for_each(|filter| check_filter(filter))
             }
+            Trigger::Device { name, .. } => check_filter(name),
             Trigger::Daily { at, .. } => parse_clock(at).map(|_| ()),
             Trigger::Interval { every } => {
                 if parse_duration(every)?.as_secs() < 60 {
@@ -293,17 +305,53 @@ impl fmt::Display for Trigger {
                 filters if filters.is_empty() => write!(f, "qualquer notificação"),
                 filters => write!(f, "notificação {filters}"),
             },
+            Trigger::Device { name, removed } => {
+                let when = if *removed { "desconectado" } else { "conectado" };
+                match name.as_str() {
+                    "" => write!(f, "qualquer dispositivo {when}"),
+                    name => write!(f, "dispositivo {name} {when}"),
+                }
+            }
         }
     }
 }
 
-/// Valores da notificação para os parâmetros da rotina.
-pub fn notification_args(notification: &Notification) -> Vec<Arg> {
-    let values = [&notification.app, &notification.title, &notification.body];
-    NOTIFICATION_PARAMS.iter().zip(values).map(|(name, value)| (name.to_string(), value.clone())).collect()
+/// Valores do evento para os parâmetros que o gatilho preenche.
+pub fn event_args(event: &Event) -> Vec<Arg> {
+    let (names, values): (&[&str], Vec<&String>) = match event {
+        Event::Named(_) => (&[], Vec::new()),
+        Event::Notification(n) => (&NOTIFICATION_PARAMS, vec![&n.app, &n.title, &n.body]),
+        Event::Device(d) => (&DEVICE_PARAMS, vec![&d.name, &d.id]),
+    };
+    names.iter().zip(values).map(|(name, value)| (name.to_string(), value.clone())).collect()
 }
 
-/// Filtro de notificação: regex sem diferenciar maiúsculas.
+/// Como o evento aparece no log e no histórico.
+pub fn event_label(event: &Event) -> String {
+    match event {
+        Event::Named(name) => format!("evento {name}"),
+        Event::Notification(n) => format!("notificação de {}", n.app),
+        Event::Device(d) => format!("{} {}", d.name, if d.removed { "desconectado" } else { "conectado" }),
+    }
+}
+
+/// Tira um par de aspas em volta do valor, se houver.
+fn unquote(value: &str) -> &str {
+    ['"', '\'']
+        .into_iter()
+        .find_map(|q| value.strip_prefix(q).and_then(|v| v.strip_suffix(q)))
+        .unwrap_or(value)
+}
+
+/// Filtro vazio aceita tudo; o resto é regex sem diferenciar maiúsculas.
+fn accepts(filter: &str, value: &str) -> bool {
+    filter.is_empty() || filter_regex(filter).is_ok_and(|re| re.is_match(value))
+}
+
+fn check_filter(filter: &str) -> Result<()> {
+    filter_regex(filter).map(|_| ()).with_context(|| format!("filtro inválido: {filter}"))
+}
+
 fn filter_regex(filter: &str) -> Result<Regex, regex::Error> {
     RegexBuilder::new(filter).case_insensitive(true).build()
 }
@@ -454,6 +502,7 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::{Device, Notification};
 
     #[test]
     fn params_bind_with_defaults_and_validate() {
@@ -478,16 +527,17 @@ mod tests {
 
     #[test]
     fn notification_trigger_filters_and_fills_params() {
-        let trigger = Trigger::parse_notification("app=teams, título=erick").unwrap();
+        let trigger = Trigger::parse_notification("app=teams, título=\"erick\"").unwrap();
         assert_eq!(trigger.notification_input(), "app=teams, titulo=erick");
         assert_eq!(trigger.to_string(), "notificação app=teams, titulo=erick");
-        let teams = Notification {
+        let notification = Notification {
             app: "com.github.IsmaelMartinez.teams_for_linux".into(),
             title: "Erick Silva".into(),
             body: "safe?".into(),
         };
+        let teams = Event::Notification(notification.clone());
         assert!(trigger.catches(&teams));
-        assert!(!trigger.catches(&Notification { title: "Ana".into(), ..teams.clone() }));
+        assert!(!trigger.catches(&Event::Notification(Notification { title: "Ana".into(), ..notification })));
         assert!(Trigger::parse_notification("").unwrap().catches(&teams), "sem filtro aceita tudo");
         assert!(Trigger::parse_notification("app=(").is_err(), "regex inválida");
         assert!(Trigger::parse_notification("de=erick").is_err(), "filtro desconhecido");
@@ -497,10 +547,29 @@ mod tests {
         routine.steps = vec!["type {titulo}: {texto}".into()];
         routine.triggers.push(trigger);
         routine.validate().unwrap();
-        let args = notification_args(&teams);
+        let args = event_args(&teams);
         assert_eq!(routine.bind(&args[1..]).unwrap()[0].1, "Erick Silva");
         routine.triggers.push(Trigger::Event { event: "ping".into() });
         assert!(routine.validate().is_err(), "evento não preenche titulo");
+    }
+
+    #[test]
+    fn device_trigger_matches_name_or_id_and_direction() {
+        let phone = Device { name: "Google Pixel 8".into(), id: "18d1:4ee7".into(), removed: false };
+        let plugged = Event::Device(phone.clone());
+        let unplugged = Event::Device(Device { removed: true, ..phone });
+        let by_name = Trigger::Device { name: "pixel".into(), removed: false };
+        assert!(by_name.catches(&plugged));
+        assert!(!by_name.catches(&unplugged), "só ao conectar");
+        assert!(Trigger::Device { name: "18d1:".into(), removed: true }.catches(&unplugged));
+        assert!(Trigger::Device { name: String::new(), removed: false }.catches(&plugged));
+        assert!(!Trigger::Device { name: "iphone".into(), removed: false }.catches(&plugged));
+        assert_eq!(by_name.to_string(), "dispositivo pixel conectado");
+        assert_eq!(event_args(&plugged)[1], ("id".into(), "18d1:4ee7".into()));
+        assert_eq!(event_label(&unplugged), "Google Pixel 8 desconectado");
+
+        let toml = toml::to_string(&by_name).unwrap();
+        assert!(!toml.contains("removed"), "conectar é o padrão: {toml}");
     }
 
     const SAMPLE: &str = r#"
@@ -522,7 +591,7 @@ mod tests {
     fn parses_routines_and_rejects_bad_names() {
         let config: Config = toml::from_str(SAMPLE).unwrap();
         assert!(config.routines[0].validate().is_ok());
-        assert!(config.routines[0].listens_to("login"));
+        assert!(config.routines[0].has_event("login"));
         assert_eq!(config.routines[0].triggers[1].to_string(), "às 09:00 (seg, sex)");
         assert!(config.validate().is_err());
     }

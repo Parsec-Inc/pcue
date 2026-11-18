@@ -10,12 +10,12 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{Listener, ListenerOptions, Stream};
 use jiff::Zoned;
 
-use crate::config::{Config, Trigger, notification_args, validate_name};
+use crate::config::{Config, Trigger, event_args, event_label, validate_name};
 use crate::constants::{DAEMON_HANDOFF, DAEMON_TICK, EVENT_DEDUP_WINDOW, NEXT_RUNS_FILE};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::{Weekday, next_daily};
 use crate::script::{Arg, parse_duration};
-use crate::platform::{self, Event, Notification, daemon_endpoint};
+use crate::platform::{self, Event, daemon_endpoint};
 use crate::utils::{config_path, log, read_json, runtime_dir, write_atomic};
 
 /// Processo de fundo: dispara rotinas por evento e horário.
@@ -142,7 +142,7 @@ impl Due {
                     every,
                 })
             }
-            Trigger::Event { .. } | Trigger::Notification { .. } => None,
+            Trigger::Event { .. } | Trigger::Notification { .. } | Trigger::Device { .. } => None,
         }
     }
 
@@ -272,49 +272,25 @@ impl Daemon {
         }
     }
 
-    /// Dispara rotinas do evento, ignorando repetições próximas.
+    /// Dispara as rotinas cujo gatilho aceita o evento, ignorando repetições próximas.
     fn fire(&mut self, event: Event) {
         let now = Instant::now();
         self.last_event.retain(|_, t| now.duration_since(*t) < EVENT_DEDUP_WINDOW);
         if self.last_event.insert(event.clone(), now).is_some() {
             return;
         }
-        match event {
-            Event::Named(name) => self.fire_named(&name),
-            Event::Notification(notification) => self.fire_notification(&notification),
-        }
-    }
-
-    /// Rotinas com gatilho do evento pelo nome.
-    fn fire_named(&mut self, event: &str) {
-        log(&format!("evento {event}"));
-        let names: Vec<String> = self
+        let label = event_label(&event);
+        log(&label);
+        let args = event_args(&event);
+        let runs: Vec<(String, Vec<Arg>)> = self
             .config
             .routines
             .iter()
-            .filter(|r| r.listens_to(event))
-            .map(|r| r.name.clone())
-            .collect();
-        for name in names {
-            self.spawn(&name, &format!("evento {event}"), &[]);
-        }
-    }
-
-    /// Rotinas com gatilho que aceita a notificação, recebendo os parâmetros que declaram.
-    fn fire_notification(&mut self, notification: &Notification) {
-        let args = notification_args(notification);
-        let runs: Vec<(String, Vec<_>)> = self
-            .config
-            .routines
-            .iter()
-            .filter(|r| r.enabled && r.triggers.iter().any(|t| t.catches(notification)))
-            .map(|r| {
-                let wanted = args.iter().filter(|(name, _)| r.params.iter().any(|p| p.name == *name));
-                (r.name.clone(), wanted.cloned().collect())
-            })
+            .filter(|r| r.enabled && r.triggers.iter().any(|t| t.catches(&event)))
+            .map(|r| (r.name.clone(), args.iter().filter(|(name, _)| r.has_param(name)).cloned().collect()))
             .collect();
         for (name, args) in runs {
-            self.spawn(&name, &format!("notificação de {}", notification.app), &args);
+            self.spawn(&name, &label, &args);
         }
     }
 

@@ -55,7 +55,7 @@ acompanhamento ao vivo das execuções.
 | ⏺️ **Gravação inteligente** | percebe app abrindo, foco e troca de workspace: grava `launch`, `focus` e `workspace` em vez das teclas, e você revisa cada trecho antes de salvar |
 | 🖱️ **Cliques relativos** | cliques ficam relativos à janela, mesmo com várias janelas da mesma class |
 | 🔒 **Senhas fora da gravação** | `SUPER+F9` pausa e retoma, `SUPER+F10` encerra |
-| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, notificação de app (Linux), horário diário e intervalo |
+| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, notificação de app (Linux), dispositivo USB conectado ou desconectado, horário diário e intervalo |
 | 🪟 **Linux e Windows** | mesma config e mesma TUI; no Windows `workspace=N` é o monitor N |
 | 🧠 **Passos espertos** | `optional`, `repeat=N`, `if_window=`, `unless_window=` e `call outra_rotina` |
 | 🐞 **Depuração** | rodar só um passo, rodar a partir de um passo, acompanhar e interromper execuções |
@@ -196,7 +196,20 @@ move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
 release SUPER
 scroll -3
 call outra_rotina [parâmetro=valor]
+shell "comando" [background] [timeout=5m]
 # comentário
+```
+
+`shell` roda o comando sem janela (`sh -c` no Linux, `cmd /C` no Windows).
+Por padrão espera ele terminar, até o `timeout` (5 min): código de saída
+diferente de zero falha o passo, com as últimas linhas do erro na mensagem.
+Com `background` ele segue rodando sozinho, mesmo depois que a rotina acaba.
+Os parâmetros da rotina chegam como variáveis de ambiente (`-` vira `_`), e
+não por `{nome}`, para um valor como `; rm -rf ~` nunca virar comando:
+
+```text
+shell "adb pull /sdcard/DCIM ~/Fotos/celular" timeout=30m
+shell "echo \"$titulo: $texto\" >> ~/mensagens.txt"
 ```
 
 Qualquer passo aceita modificadores:
@@ -260,6 +273,26 @@ O daemon lê as notificações pelo D-Bus da sessão e não grava o conteúdo no
 log. Notificações do próprio pcue são ignoradas, e a mesma notificação
 repetida em menos de 2 s dispara uma vez só. Se o Teams estiver configurado
 para esconder a prévia da mensagem, `texto` chega vazio.
+
+### Gatilho por dispositivo
+
+Dispara quando um dispositivo USB é conectado (ou desconectado), como um
+celular ou um pendrive. Em `a` escolha **dispositivo conectado** ou
+**dispositivo desconectado** e informe uma regex do nome ou do id
+`fabricante:produto` (`pixel`, `18d1:4ee7`); vazio aceita qualquer um, e
+`Ctrl+G` captura o próximo que você plugar. Hubs USB ficam de fora.
+
+```toml
+[[routine]]
+name = "backup-celular"
+params = [{ name = "dispositivo" }]
+triggers = [{ type = "device", name = "pixel" }]   # removed = true: ao desconectar
+steps = ["shell \"adb wait-for-device && adb pull /sdcard/DCIM ~/Fotos\" timeout=30m"]
+```
+
+A rotina recebe `dispositivo` (fabricante e produto) e `id`. No Linux o
+daemon lê os eventos do kernel; no Windows o nome não vem, então
+`dispositivo` é o próprio id, e a captura com `Ctrl+G` ainda não funciona.
 
 `focus` espera a janela existir e foca nela, trocando de workspace se
 precisar. É mais robusto que `key SUPER+N`, que depende de onde o foco está.

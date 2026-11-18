@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::config::Workspace;
-use crate::constants::{DEFAULT_DRAG_DURATION, DEFAULT_WAIT_TIMEOUT};
+use crate::constants::{DEFAULT_DRAG_DURATION, DEFAULT_SHELL_TIMEOUT, DEFAULT_WAIT_TIMEOUT};
 use crate::keys::{Key, combo_name, key_name, parse_combo, parse_key};
 
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
@@ -20,6 +20,7 @@ pub const SYNTAX: &[&str] = &[
     "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]",
     "hold SUPER | mouse_right [X,Y]   release SUPER | mouse_right   move X,Y [duration=300ms]",
     "call outra_rotina [parâmetro=valor]      # comentário",
+    "shell \"comando\" [background] [timeout=5m]   roda oculto; parâmetros viram variáveis (\"$pessoa\")",
     "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
 ];
 
@@ -65,6 +66,13 @@ pub enum Step {
     Scroll(i32),
     /// Roda outra rotina com os valores dos parâmetros dela.
     Call { routine: String, args: Vec<Arg> },
+    /// Comando sem janela; os parâmetros vão como variáveis de ambiente.
+    Shell {
+        command: String,
+        background: bool,
+        timeout: Duration,
+        env: Vec<Arg>,
+    },
     /// Aperta e mantém até um `release` ou o fim da rotina.
     Hold {
         input: Input,
@@ -205,7 +213,14 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
 /// Interpreta um passo trocando `{nome}` pelos valores; um valor nunca vira opção.
 pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
     let mut tokens = tokenize(line)?;
+    let shell = tokens.first().is_some_and(|t| t.text == "shell");
     for token in tokens.iter_mut().skip(1) {
+        if shell && !token.text.split_once('=').is_some_and(|(key, _)| is_option_name(key)) {
+            if let Some((name, _)) = args.iter().find(|(name, _)| token.text.contains(&format!("{{{name}}}"))) {
+                bail!("no shell use \"${}\" em vez de {{{name}}}", env_name(name));
+            }
+            continue;
+        }
         let expanded = expand(&token.text, args);
         if expanded != token.text {
             if let Some((key, value)) = token.text.split_once('=').filter(|(key, _)| is_option_name(key)) {
@@ -216,6 +231,7 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
             }
         }
     }
+    let params = args;
     let (verb, args) = tokens.split_first().ok_or_else(|| anyhow!("linha vazia"))?;
     let mut options = Options::new(args);
     let guard = Guard {
@@ -267,6 +283,12 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
             crate::config::validate_name(&routine)?;
             Step::Call { routine, args: options.drain_named() }
         }
+        "shell" => Step::Shell {
+            command: options.positional("comando")?,
+            background: options.flag("background"),
+            timeout: parse_optional_duration(&mut options, "timeout", DEFAULT_SHELL_TIMEOUT)?,
+            env: params.iter().map(|(name, value)| (env_name(name), value.clone())).collect(),
+        },
         "scroll" => Step::Scroll(
             options
                 .positional("quantidade")?
@@ -277,6 +299,11 @@ pub fn parse_line_with(line: &str, args: &[Arg]) -> Result<Instruction> {
     };
     options.finish()?;
     Ok(Instruction { step, guard })
+}
+
+/// Nome do parâmetro como variável de ambiente (`-` vira `_`).
+pub fn env_name(param: &str) -> String {
+    param.replace('-', "_")
 }
 
 /// Opção `timeout`, com o padrão das esperas.
@@ -578,12 +605,12 @@ impl Options {
         self.flags.len() != before
     }
 
-    /// Erro se sobrou argumento que ninguém usou.
     /// Todas as opções `nome=valor` que sobraram.
     fn drain_named(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.named)
     }
 
+    /// Erro se sobrou argumento que ninguém usou.
     fn finish(self) -> Result<()> {
         let leftovers: Vec<String> = self
             .positional
@@ -599,7 +626,7 @@ impl Options {
 }
 
 /// Flags sem valor aceitas pelos comandos.
-const KNOWN_FLAGS: &[&str] = &["focus", "always", "optional"];
+const KNOWN_FLAGS: &[&str] = &["focus", "always", "optional", "background"];
 
 /// Chave de opção é um identificador simples.
 fn is_option_name(key: &str) -> bool {
@@ -688,6 +715,16 @@ impl fmt::Display for Step {
             Step::Call { routine, args } => {
                 write!(f, "call {routine}")?;
                 args.iter().try_for_each(|(name, value)| write!(f, " {name}={}", quote(value)))
+            }
+            Step::Shell { command, background, timeout, .. } => {
+                write!(f, "shell {}", quote(command))?;
+                if *background {
+                    f.write_str(" background")?;
+                }
+                if *timeout != DEFAULT_SHELL_TIMEOUT {
+                    write!(f, " timeout={}", format_duration(*timeout))?;
+                }
+                Ok(())
             }
             Step::Hold { input, at } => {
                 write!(f, "hold {input}")?;
@@ -883,6 +920,20 @@ mod tests {
         assert!(parse("drag from=1,1 via=5,5@1s to=2,2 duration=500ms").is_err(), "via depois do fim");
         assert!(parse("drag from=1,1 via=5,5 to=2,2").is_err(), "via sem tempo");
         assert!(parse("move").is_err());
+    }
+
+    #[test]
+    fn shell_gets_params_as_env_not_text() {
+        let args = vec![("minha-pessoa".to_string(), "ana; rm x".to_string())];
+        let line = parse_line_with("shell \"echo \\\"$minha_pessoa\\\"\" background timeout=1m", &args).unwrap();
+        let Step::Shell { command, background, timeout, env } = &line.step else { panic!("{:?}", line.step) };
+        assert_eq!(command, "echo \"$minha_pessoa\"");
+        assert!(*background);
+        assert_eq!(*timeout, Duration::from_secs(60));
+        assert_eq!(env, &vec![("minha_pessoa".to_string(), "ana; rm x".to_string())]);
+        let round = Step::Shell { command: command.clone(), background: true, timeout: *timeout, env: Vec::new() };
+        assert_eq!(parse_line(&line.step.to_string()).unwrap().step, round);
+        assert!(parse_line_with("shell \"echo {minha-pessoa}\"", &args).is_err(), "{{x}} no shell vira erro");
     }
 
     #[test]

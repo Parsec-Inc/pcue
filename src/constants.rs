@@ -41,6 +41,8 @@ pub const DRAG_THRESHOLD: i32 = 6;
 pub const RECORDED_DRAG_MIN: Duration = Duration::from_millis(100);
 /// Parâmetros que o gatilho de notificação preenche: app, título e texto.
 pub const NOTIFICATION_PARAMS: [&str; 3] = ["app", "titulo", "texto"];
+/// Parâmetros que o gatilho de dispositivo preenche: nome e id `vendor:product`.
+pub const DEVICE_PARAMS: [&str; 2] = ["dispositivo", "id"];
 /// Opções dos passos que não podem ser nome de parâmetro.
 pub const RESERVED_PARAMS: [&str; 4] = ["optional", "if_window", "unless_window", "repeat"];
 /// Gravação: intervalo entre leituras da posição do cursor.
@@ -62,6 +64,14 @@ pub const DAEMON_SOCKET: &str = "daemon.sock";
 pub const DAEMON_TICK: Duration = Duration::from_secs(1);
 /// Quanto o daemon novo espera o antigo liberar o canal.
 pub const DAEMON_HANDOFF: Duration = Duration::from_secs(5);
+/// Espera padrão de um `shell` antes de desistir.
+pub const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Linhas finais do erro de um `shell` que vão para a mensagem de falha.
+pub const SHELL_ERROR_LINES: usize = 3;
+/// Bytes da saída de erro de um `shell` guardados para a mensagem de falha.
+pub const SHELL_STDERR_LIMIT: u64 = 64 * 1024;
+/// Intervalo entre conferências do fim de um `shell`.
+pub const SHELL_POLL: Duration = Duration::from_millis(20);
 pub const EVENT_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 pub const TUI_RUN_DELAY_MS: u64 = 1500;
 
@@ -117,6 +127,21 @@ pub const DEFAULT_EDITOR: &str = "nano";
 pub const DEFAULT_EDITOR: &str = "notepad";
 /// Gravação: intervalo entre consultas ao desktop.
 pub const DESKTOP_POLL: Duration = Duration::from_millis(150);
+/// Classe de interface dos dispositivos USB (GUID_DEVINTERFACE_USB_DEVICE).
+#[cfg(windows)]
+pub const USB_DEVICE_INTERFACE: u128 = 0xA5DCBF10_6530_11D2_901F_00C04FB951ED;
+/// Grupo netlink dos uevents do kernel.
+#[cfg(target_os = "linux")]
+pub const KERNEL_UEVENTS: u32 = 1;
+/// Tamanho máximo lido de um uevent.
+#[cfg(target_os = "linux")]
+pub const UEVENT_BUFFER: usize = 8192;
+/// `bDeviceClass` dos hubs USB, ignorados pelo gatilho de dispositivo.
+#[cfg(target_os = "linux")]
+pub const USB_HUB_CLASS: &str = "09";
+/// Dispositivos USB no sysfs.
+#[cfg(target_os = "linux")]
+pub const USB_DEVICES_DIR: &str = "/sys/bus/usb/devices";
 /// Gravação: eventos do Hyprland que pedem uma nova consulta ao desktop.
 #[cfg(target_os = "linux")]
 pub const DESKTOP_CHANGE_EVENTS: [&str; 6] =

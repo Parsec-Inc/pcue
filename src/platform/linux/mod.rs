@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
-pub use events::{event_sources, watch_notifications};
+pub use events::{event_sources, watch_devices, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;
@@ -225,6 +225,17 @@ fn proc_cmdline(pid: i64) -> Option<String> {
         .map(|a| String::from_utf8_lossy(a).into_owned())
         .collect();
     (!args.is_empty()).then(|| shell_join(&args))
+}
+
+/// Comando do passo `shell`; em background, num grupo próprio para sobreviver à rotina.
+pub fn shell(command: &str, background: bool) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut shell = Command::new("sh");
+    shell.args(["-c", command]);
+    if background {
+        shell.process_group(0);
+    }
+    shell
 }
 
 /// Abre o comando fora da sessão do terminal, sem depender do compositor.

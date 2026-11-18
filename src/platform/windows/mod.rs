@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericNamespaced, Name, ToNsName};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
-pub use events::{event_sources, watch_notifications};
+pub use events::{event_sources, watch_devices, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;
@@ -171,6 +171,18 @@ fn monitor_index(workspace: &Workspace, count: usize) -> Result<usize> {
         .with_context(|| format!("no Windows o workspace é o número do monitor (1, 2...): {workspace}"))?;
     anyhow::ensure!(number <= count, "monitor {number} não existe (há {count})");
     Ok(number - 1)
+}
+
+/// Comando do passo `shell`, sem janela de console.
+pub fn shell(command: &str, background: bool) -> Command {
+    let mut shell = Command::new("cmd");
+    shell.raw_arg(format!("/C {command}"));
+    if background {
+        shell.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
+    } else {
+        self::background(&mut shell);
+    }
+    shell
 }
 
 /// Abre o comando sem janela de console.
