@@ -108,7 +108,11 @@ fn draw_brand(frame: &mut Frame, area: Rect, app: &mut App) {
             Span::styled("pcue", Style::new().fg(ACCENT).bold()),
             Span::styled("  rotinas dos parças", Style::new().fg(MUTED)),
         ]),
-        Line::raw(""),
+        if app.dirty() {
+            Line::styled("● não salvo · S salva", Style::new().fg(WARN).bold())
+        } else {
+            Line::raw("")
+        },
         chip(app.daemon_up, "daemon ativo", "daemon parado", mix(GREEN_LOW, GREEN_HIGH, pulse)),
         chip(app.installed, "no autostart", "fora do autostart", OK),
         chip(app.manager.is_some(), app.manager.unwrap_or("-"), "sem gerenciador de janelas", OK),
@@ -124,6 +128,9 @@ fn draw_brand(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(lines), text);
     let autostart = Rect::new(text.x, text.y + 3, text.width, 1);
     app.hits.push((autostart, Hit::Key(KeyCode::Char('I'))));
+    if app.dirty() {
+        app.hits.push((Rect::new(text.x, text.y + 1, text.width, 1), Hit::Key(KeyCode::Char('S'))));
+    }
 }
 
 fn draw_routines(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -532,6 +539,9 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             ("E", "editor", c('E')),
         ],
     };
+    if app.dirty() {
+        list.splice(0..0, [("S", "salvar", c('S')), ("u", "descartar", c('u'))]);
+    }
     if app.update.is_some() {
         list.push(("U", "atualizar", c('U')));
     }
@@ -1038,5 +1048,6 @@ const HELP_GENERAL: &[&str] = &[
     "",
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
+    "  mudanças ficam pendentes até S (ou Ctrl+S) salvar · u descarta · sair com pendências pede confirmação",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];

@@ -158,9 +158,14 @@ sozinho quando o binário muda.
 
 ### Atalhos da TUI
 
+Nada vai para o disco até você salvar: as edições ficam pendentes (o topo
+mostra "não salvo"), `S` grava e `u` volta ao que estava salvo. Sair ou rodar
+com alterações pendentes pede confirmação, e o daemon só enxerga o que foi
+salvo.
+
 | Onde | Teclas |
 |---|---|
-| Geral | `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
+| Geral | `S`/`Ctrl+S` salva · `u` descarta as alterações · `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
 | Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `C` limpa todos (pede confirmação) · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |
