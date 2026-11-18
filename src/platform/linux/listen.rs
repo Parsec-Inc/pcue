@@ -47,7 +47,7 @@ fn to_raw(kind: InputEventKind, value: i32) -> Option<RawInput> {
                 _ => None,
             };
             match (button, value) {
-                (Some(button), 1) => Some(RawInput::Button(button)),
+                (Some(button), 0 | 1) => Some(RawInput::Button { button, down: value == 1 }),
                 (Some(_), _) | (None, 2) => None,
                 (None, _) => Some(RawInput::Key {
                     key: Key(key.code()),

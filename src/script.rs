@@ -4,8 +4,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::config::Workspace;
-use crate::constants::DEFAULT_WAIT_TIMEOUT;
-use crate::keys::{Key, combo_name, parse_combo};
+use crate::constants::{DEFAULT_DRAG_DURATION, DEFAULT_WAIT_TIMEOUT};
+use crate::keys::{Key, combo_name, key_name, parse_combo, parse_key};
 
 /// Sintaxe dos passos, uma forma por linha (ajuda da TUI e do editor).
 pub const SYNTAX: &[&str] = &[
@@ -16,7 +16,9 @@ pub const SYNTAX: &[&str] = &[
     "wait_window class=REGEX [nth=N] [timeout=30s]    sleep 500ms | 2s | 1m | 1h",
     "focus class=REGEX [nth=N] [timeout=30s]   foca a janela do app (troca de workspace se preciso)",
     "key SUPER+2      type \"texto\"      scroll -3 (negativo desce)",
-    "click [left|right|middle] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
+    "click [left|right|middle] [hold=CTRL] X,Y   ou   click window=REGEX [nth=N] at=X,Y",
+    "drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y to=X,Y [duration=300ms]",
+    "hold SUPER | mouse_right [X,Y]   release SUPER | mouse_right   move X,Y [duration=300ms]",
     "call outra_rotina      # comentário",
     "em qualquer passo: optional · repeat=N · if_window=REGEX · unless_window=REGEX",
 ];
@@ -57,10 +59,58 @@ pub enum Step {
     Type(String),
     Click {
         button: Button,
+        hold: Vec<Key>,
         target: ClickTarget,
     },
     Scroll(i32),
     Call(String),
+    /// Aperta e mantém até um `release` ou o fim da rotina.
+    Hold {
+        input: Input,
+        at: Option<ClickTarget>,
+    },
+    Release(Input),
+    Move {
+        target: ClickTarget,
+        duration: Duration,
+    },
+    /// Segura as teclas e o botão em `from`, arrasta até `to` e solta tudo.
+    Drag {
+        button: Button,
+        hold: Vec<Key>,
+        /// Janela (class, nth) das coordenadas; sem ela, são absolutas.
+        window: Option<WindowRef>,
+        from: (i32, i32),
+        to: (i32, i32),
+        duration: Duration,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    Key(Key),
+    Mouse(Button),
+}
+
+impl Input {
+    /// Lê `SUPER` ou `mouse_right`.
+    fn parse(name: &str) -> Result<Self> {
+        match name.strip_prefix("mouse_") {
+            Some(button) => Button::parse(button)
+                .map(Self::Mouse)
+                .ok_or_else(|| anyhow!("botão desconhecido: {name} (mouse_left, mouse_right ou mouse_middle)")),
+            None => parse_key(name).map(Self::Key),
+        }
+    }
+}
+
+impl fmt::Display for Input {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Input::Key(key) => write!(f, "{}", key_name(*key)),
+            Input::Mouse(button) => write!(f, "mouse_{}", button.name()),
+        }
+    }
 }
 
 /// Condições e repetição aplicáveis a qualquer passo.
@@ -91,18 +141,16 @@ pub enum Button {
     Middle,
 }
 
-/// Onde clicar: posição absoluta ou relativa a uma janela.
+/// Onde agir: x,y relativos à janela de `window`, ou absolutos sem ela.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ClickTarget {
-    Absolute { x: i32, y: i32 },
-    /// `nth` conta as janelas da class por ordem de abertura, a partir de 1.
-    Window {
-        class: String,
-        nth: usize,
-        x: i32,
-        y: i32,
-    },
+pub struct ClickTarget {
+    pub window: Option<WindowRef>,
+    pub x: i32,
+    pub y: i32,
 }
+
+/// Class da janela e qual delas (`nth` conta por ordem de abertura, a partir de 1).
+pub type WindowRef = (String, usize);
 
 /// Linha do script com o número original, para mensagens de erro.
 #[derive(Debug, Clone)]
@@ -182,6 +230,13 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
         "key" => Step::Key(parse_combo(&options.positional("atalho")?)?),
         "type" => Step::Type(options.positional("texto")?),
         "click" => parse_click(&mut options)?,
+        "move" => Step::Move {
+            target: parse_position(&mut options)?,
+            duration: parse_optional_duration(&mut options, "duration", Duration::ZERO)?,
+        },
+        "drag" => parse_drag(&mut options)?,
+        "hold" => parse_hold(&mut options)?,
+        "release" => Step::Release(Input::parse(&options.positional("tecla ou botão")?)?),
         "call" => {
             let name = options.positional("rotina")?;
             crate::config::validate_name(&name)?;
@@ -201,11 +256,7 @@ pub fn parse_line(line: &str) -> Result<Instruction> {
 
 /// Opção `timeout`, com o padrão das esperas.
 fn parse_timeout(options: &mut Options) -> Result<Duration> {
-    Ok(options
-        .take("timeout")
-        .map(|v| parse_duration(&v))
-        .transpose()?
-        .unwrap_or(DEFAULT_WAIT_TIMEOUT))
+    parse_optional_duration(options, "timeout", DEFAULT_WAIT_TIMEOUT)
 }
 
 /// Opção `nth` (1 = mais antiga), padrão 1.
@@ -218,27 +269,77 @@ fn parse_nth(options: &mut Options) -> Result<usize> {
 
 /// `click [left|right|middle] X,Y` ou `click [botão] window=CLASS [nth=N] at=X,Y`.
 fn parse_click(options: &mut Options) -> Result<Step> {
-    let mut button = Button::Left;
-    if let Some(name) = options.peek_positional()
-        && let Some(parsed) = Button::parse(name) {
-            button = parsed;
-            options.positional("botão")?;
-        }
-    let target = match options.take("window") {
-        Some(class) => {
-            let (x, y) = parse_point(&options.required("at")?)?;
-            let nth = parse_nth(options)?;
-            ClickTarget::Window { class, nth, x, y }
-        }
-        None => {
-            let (x, y) = parse_point(&options.positional("posição X,Y")?)?;
-            ClickTarget::Absolute { x, y }
-        }
-    };
-    Ok(Step::Click { button, target })
+    let button = parse_button(options)?;
+    let hold = parse_hold_keys(options)?;
+    let target = parse_position(options)?;
+    Ok(Step::Click { button, hold, target })
 }
 
-/// Lê `X,Y`.
+fn parse_hold_keys(options: &mut Options) -> Result<Vec<Key>> {
+    Ok(options.take("hold").map(|raw| parse_combo(&raw)).transpose()?.unwrap_or_default())
+}
+
+/// Botão opcional antes da posição, padrão `left`.
+fn parse_button(options: &mut Options) -> Result<Button> {
+    match options.peek_positional().and_then(Button::parse) {
+        Some(button) => {
+            options.positional("botão")?;
+            Ok(button)
+        }
+        None => Ok(Button::Left),
+    }
+}
+
+/// `X,Y` absoluto ou `window=CLASS [nth=N] at=X,Y`.
+fn parse_position(options: &mut Options) -> Result<ClickTarget> {
+    parse_optional_position(options)?.context("falta a posição X,Y")
+}
+
+fn parse_optional_position(options: &mut Options) -> Result<Option<ClickTarget>> {
+    let window = parse_window(options)?;
+    let raw = match window {
+        Some(_) => options.required("at")?,
+        None if options.peek_positional().is_some() => options.positional("posição X,Y")?,
+        None => return Ok(None),
+    };
+    let (x, y) = parse_point(&raw)?;
+    Ok(Some(ClickTarget { window, x, y }))
+}
+
+/// `window=CLASS [nth=N]`, para posições relativas à janela.
+fn parse_window(options: &mut Options) -> Result<Option<WindowRef>> {
+    match options.take("window") {
+        Some(class) => Ok(Some((class, parse_nth(options)?))),
+        None => Ok(None),
+    }
+}
+
+
+fn parse_optional_duration(options: &mut Options, key: &str, default: Duration) -> Result<Duration> {
+    options.take(key).map_or(Ok(default), |raw| parse_duration(&raw))
+}
+
+/// `drag [botão] [hold=SUPER+SHIFT] [window=CLASS [nth=N]] from=X,Y to=X,Y [duration=..]`.
+fn parse_drag(options: &mut Options) -> Result<Step> {
+    let button = parse_button(options)?;
+    let hold = parse_hold_keys(options)?;
+    let window = parse_window(options)?;
+    let from = parse_point(&options.required("from")?)?;
+    let to = parse_point(&options.required("to")?)?;
+    let duration = parse_optional_duration(options, "duration", DEFAULT_DRAG_DURATION)?;
+    Ok(Step::Drag { button, hold, window, from, to, duration })
+}
+
+/// `hold TECLA` ou `hold mouse_BOTÃO [X,Y | window=CLASS [nth=N] at=X,Y]`.
+fn parse_hold(options: &mut Options) -> Result<Step> {
+    let input = Input::parse(&options.positional("tecla ou botão")?)?;
+    let at = parse_optional_position(options)?;
+    if at.is_some() && matches!(input, Input::Key(_)) {
+        bail!("posição só vale para botão do mouse");
+    }
+    Ok(Step::Hold { input, at })
+}
+
 fn parse_point(raw: &str) -> Result<(i32, i32)> {
     let (x, y) = raw
         .split_once(',')
@@ -503,23 +604,65 @@ impl fmt::Display for Step {
             Step::Sleep(duration) => write!(f, "sleep {}", format_duration(*duration)),
             Step::Key(keys) => write!(f, "key {}", combo_name(keys)),
             Step::Type(text) => write!(f, "type {}", quote(text)),
-            Step::Click { button, target } => {
+            Step::Click { button, hold, target } => {
                 write!(f, "click {}", button.name())?;
-                match target {
-                    ClickTarget::Absolute { x, y } => write!(f, " {x},{y}"),
-                    ClickTarget::Window { class, nth, x, y } => {
-                        write!(f, " window={}", quote(class))?;
-                        if *nth > 1 {
-                            write!(f, " nth={nth}")?;
-                        }
-                        write!(f, " at={x},{y}")
-                    }
-                }
+                write_hold(f, hold)?;
+                write_position(f, target)
             }
             Step::Scroll(amount) => write!(f, "scroll {amount}"),
             Step::Call(name) => write!(f, "call {name}"),
+            Step::Hold { input, at } => {
+                write!(f, "hold {input}")?;
+                at.as_ref().map_or(Ok(()), |target| write_position(f, target))
+            }
+            Step::Release(input) => write!(f, "release {input}"),
+            Step::Move { target, duration } => {
+                write!(f, "move")?;
+                write_position(f, target)?;
+                if !duration.is_zero() {
+                    write!(f, " duration={}", format_duration(*duration))?;
+                }
+                Ok(())
+            }
+            Step::Drag { button, hold, window, from, to, duration } => {
+                write!(f, "drag {}", button.name())?;
+                write_hold(f, hold)?;
+                if let Some((class, nth)) = window {
+                    write_window(f, class, *nth)?;
+                }
+                write!(f, " from={},{} to={},{}", from.0, from.1, to.0, to.1)?;
+                if *duration != DEFAULT_DRAG_DURATION {
+                    write!(f, " duration={}", format_duration(*duration))?;
+                }
+                Ok(())
+            }
         }
     }
+}
+
+fn write_position(f: &mut fmt::Formatter<'_>, target: &ClickTarget) -> fmt::Result {
+    match &target.window {
+        Some((class, nth)) => {
+            write_window(f, class, *nth)?;
+            write!(f, " at={},{}", target.x, target.y)
+        }
+        None => write!(f, " {},{}", target.x, target.y),
+    }
+}
+
+fn write_hold(f: &mut fmt::Formatter<'_>, hold: &[Key]) -> fmt::Result {
+    if hold.is_empty() {
+        return Ok(());
+    }
+    write!(f, " hold={}", combo_name(hold))
+}
+
+fn write_window(f: &mut fmt::Formatter<'_>, class: &str, nth: usize) -> fmt::Result {
+    write!(f, " window={}", quote(class))?;
+    if nth > 1 {
+        write!(f, " nth={nth}")?;
+    }
+    Ok(())
 }
 
 impl fmt::Display for Guard {
@@ -565,12 +708,21 @@ mod tests {
         click 10,20
         scroll -3
         launch kitty focus always
+        hold SUPER
+        hold mouse_right 800,400
+        move 800,700 duration=250ms
+        move window=kitty at=5,5
+        release mouse_right
+        release SUPER
+        drag right hold=SUPER from=800,400 to=800,700
+        drag window=firefox nth=2 from=10,10 to=300,10 duration=1s
+        click middle hold=CTRL+SHIFT 5,5
     "#;
 
     #[test]
     fn parses_every_step_kind() {
         let lines = parse(SAMPLE).unwrap();
-        assert_eq!(lines.len(), 13);
+        assert_eq!(lines.len(), 22);
         assert_eq!(lines[0].number, 3);
         assert!(matches!(&lines[2].step, Step::WaitWindow { nth: 2, .. }));
         assert_eq!(
@@ -581,12 +733,8 @@ mod tests {
             lines[9].step,
             Step::Click {
                 button: Button::Right,
-                target: ClickTarget::Window {
-                    class: r"org\.gnome\.Nautilus".into(),
-                    nth: 2,
-                    x: 120,
-                    y: 40
-                }
+                hold: vec![],
+                target: ClickTarget { window: Some((r"org\.gnome\.Nautilus".into(), 2)), x: 120, y: 40 }
             }
         );
         assert!(matches!(lines[12].step, Step::Launch { focus: true, always: true, .. }));
@@ -599,6 +747,46 @@ mod tests {
             let reparsed = parse(&printed).unwrap();
             assert_eq!(reparsed[0].step, line.step, "{printed}");
         }
+    }
+
+    #[test]
+    fn parses_held_inputs_and_drags() {
+        let lines = parse(SAMPLE).unwrap();
+        assert_eq!(lines[13].step, Step::Hold { input: Input::Key(Key::LEFTMETA), at: None });
+        assert_eq!(
+            lines[14].step,
+            Step::Hold { input: Input::Mouse(Button::Right), at: Some(ClickTarget { window: None, x: 800, y: 400 }) }
+        );
+        assert_eq!(
+            lines[15].step,
+            Step::Move { target: ClickTarget { window: None, x: 800, y: 700 }, duration: Duration::from_millis(250) }
+        );
+        assert_eq!(lines[17].step, Step::Release(Input::Mouse(Button::Right)));
+        assert_eq!(
+            lines[19].step,
+            Step::Drag {
+                button: Button::Right,
+                hold: vec![Key::LEFTMETA],
+                window: None,
+                from: (800, 400),
+                to: (800, 700),
+                duration: DEFAULT_DRAG_DURATION,
+            }
+        );
+        let Step::Drag { button: Button::Left, hold, window: Some((class, 2)), to: (300, 10), .. } = &lines[20].step else {
+            panic!("{:?}", lines[20].step)
+        };
+        assert!(hold.is_empty() && class == "firefox");
+        assert!(matches!(&lines[21].step, Step::Click { button: Button::Middle, hold, .. } if hold.len() == 2));
+    }
+
+    #[test]
+    fn rejects_bad_holds_and_drags() {
+        assert!(parse("hold SUPER 1,1").is_err(), "teclas não têm posição");
+        assert!(parse("hold mouse_side").is_err());
+        assert!(parse("hold mouse_left window=kitty").is_err(), "window sem at");
+        assert!(parse("drag from=1,1").is_err(), "drag sem to");
+        assert!(parse("move").is_err());
     }
 
     #[test]

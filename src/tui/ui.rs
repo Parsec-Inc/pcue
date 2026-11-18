@@ -466,7 +466,7 @@ fn highlight_step(step: &str) -> Vec<Span<'_>> {
         "wait_window" | "wait_layer" | "wait_monitors" | "sleep" => WARN,
         "workspace" => OK,
         "key" | "type" => Color::Magenta,
-        "click" | "scroll" => Color::Blue,
+        "click" | "scroll" | "move" | "drag" | "hold" | "release" => Color::Blue,
         "call" => ACCENT,
         _ => BAD,
     };
@@ -525,6 +525,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str, KeyCode)> {
             ("x", "rodar só este", c('x')),
             ("f", "rodar daqui", c('f')),
             ("d", "apagar", c('d')),
+            ("C", "limpar", c('C')),
             ("J/K", "mover", c('J')),
             ("R", "gravar", c('R')),
             ("c", "capturar janelas", c('c')),

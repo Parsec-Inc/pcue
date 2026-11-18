@@ -163,7 +163,7 @@ sozinho quando o binário muda.
 | Geral | `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
-| Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |
+| Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `C` limpa todos (pede confirmação) · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |
 
 Com o mouse: clique seleciona, duplo clique roda (rotina) ou edita (gatilho e
 passo), a roda rola as listas e os botões do rodapé e das janelas respondem ao
@@ -183,8 +183,12 @@ workspace N
 sleep 500ms
 key SUPER+2
 type "texto"
-click [left|right|middle] X,Y
+click [left|right|middle] [hold=CTRL] X,Y
 click window=REGEX [nth=N] at=X,Y
+drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y to=X,Y [duration=300ms]
+hold SUPER                      # ou mouse_left|mouse_right|mouse_middle [X,Y]
+move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
+release SUPER
 scroll -3
 call outra_rotina
 # comentário
@@ -233,6 +237,14 @@ sleep 1500ms
 
 O comentário marca o prefixo, então ele não é repetido. Pode editar ou apagar
 os passos à vontade. No Windows o prefixo é só `wait_monitors` e o `sleep`.
+
+`drag` segura as teclas de `hold=` e o botão em `from`, arrasta até `to` e
+solta tudo. É o caso comum de `SUPER` + botão direito para redimensionar uma
+janela: `drag right hold=SUPER from=800,400 to=800,700`. Para outras
+combinações, `hold` aperta uma tecla ou botão e mantém até o `release`; o que
+ficar apertado é solto no fim da rotina, mesmo se ela falhar. Na gravação,
+arrastar com o mouse vira `drag`, e um clique com modificador segurado vira
+`click hold=CTRL ...`.
 
 `click window=... nth=2` mira a segunda janela da class na ordem em que foram
 abertas, então dá para gravar cliques em duas instâncias do mesmo app.

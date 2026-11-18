@@ -4,7 +4,7 @@ use evdev::{AttributeSet, EventType, InputEvent, RelativeAxisType};
 
 use crate::constants::{KEY_STEP_DELAY, VIRTUAL_DEVICE_NAME, VIRTUAL_DEVICE_SETTLE};
 use crate::keys::{Key, char_to_key};
-use crate::script::Button;
+use crate::script::{Button, Input};
 
 /// Último código de tecla de teclado comum emitido pelo dispositivo.
 const MAX_KEYBOARD_CODE: u16 = 248;
@@ -66,9 +66,8 @@ impl VirtualInput {
 
     /// Clica com o botão onde o cursor estiver.
     pub fn click(&mut self, button: Button) -> Result<()> {
-        let code = button_code(button);
-        self.emit(EventType::KEY, code.code(), 1)?;
-        self.emit(EventType::KEY, code.code(), 0)
+        self.press(Input::Mouse(button))?;
+        self.release(Input::Mouse(button))
     }
 
     /// Rola a roda; positivo sobe, negativo desce.
@@ -80,6 +79,14 @@ impl VirtualInput {
         Ok(())
     }
 
+    pub fn press(&mut self, input: Input) -> Result<()> {
+        self.emit(EventType::KEY, input_code(input), 1)
+    }
+
+    pub fn release(&mut self, input: Input) -> Result<()> {
+        self.emit(EventType::KEY, input_code(input), 0)
+    }
+
     fn key(&mut self, key: Key, value: i32) -> Result<()> {
         self.emit(EventType::KEY, key.0, value)
     }
@@ -88,6 +95,13 @@ impl VirtualInput {
         self.device.emit(&[InputEvent::new(kind, code, value)])?;
         std::thread::sleep(KEY_STEP_DELAY);
         Ok(())
+    }
+}
+
+fn input_code(input: Input) -> u16 {
+    match input {
+        Input::Key(key) => key.0,
+        Input::Mouse(button) => button_code(button).code(),
     }
 }
 

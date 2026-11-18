@@ -11,7 +11,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::WHEEL_DELTA;
 
 use crate::constants::KEY_STEP_DELAY;
 use crate::keys::Key;
-use crate::script::Button;
+use crate::script::{Button, Input};
 
 /// Teclas que o Windows marca como estendidas (setas, navegação, lado direito).
 const EXTENDED_VKS: &[u16] = &[
@@ -28,10 +28,7 @@ impl VirtualInput {
 
     /// Pressiona o atalho em ordem e solta ao contrário.
     pub fn combo(&mut self, keys: &[Key]) -> Result<()> {
-        let vks = keys
-            .iter()
-            .map(|key| key.vk().ok_or_else(|| anyhow!("tecla sem equivalente no Windows: {key:?}")))
-            .collect::<Result<Vec<u16>>>()?;
+        let vks = keys.iter().map(|key| vk_of(*key)).collect::<Result<Vec<u16>>>()?;
         for vk in &vks {
             send(&[key_input(*vk, false)])?;
         }
@@ -59,13 +56,16 @@ impl VirtualInput {
 
     /// Clica com o botão onde o cursor estiver.
     pub fn click(&mut self, button: Button) -> Result<()> {
-        let (down, up) = match button {
-            Button::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-            Button::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-            Button::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-        };
-        send(&[mouse_input(down, 0)])?;
-        send(&[mouse_input(up, 0)])
+        self.press(Input::Mouse(button))?;
+        self.release(Input::Mouse(button))
+    }
+
+    pub fn press(&mut self, input: Input) -> Result<()> {
+        send(&[input_event(input, false)?])
+    }
+
+    pub fn release(&mut self, input: Input) -> Result<()> {
+        send(&[input_event(input, true)?])
     }
 
     /// Rola a roda; positivo sobe, negativo desce.
@@ -76,6 +76,24 @@ impl VirtualInput {
         }
         Ok(())
     }
+}
+
+fn vk_of(key: Key) -> Result<u16> {
+    key.vk().ok_or_else(|| anyhow!("tecla sem equivalente no Windows: {key:?}"))
+}
+
+fn input_event(input: Input, up: bool) -> Result<INPUT> {
+    Ok(match input {
+        Input::Key(key) => key_input(vk_of(key)?, up),
+        Input::Mouse(button) => {
+            let (down_flag, up_flag) = match button {
+                Button::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+                Button::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+                Button::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            };
+            mouse_input(if up { up_flag } else { down_flag }, 0)
+        }
+    })
 }
 
 fn key_input(vk: u16, up: bool) -> INPUT {

@@ -125,6 +125,7 @@ pub enum PickPurpose {
 pub enum ConfirmAction {
     DeleteRoutine,
     DeleteStep(usize),
+    ClearSteps,
     DeleteTrigger(usize),
     MakeFree,
     Update,
@@ -580,6 +581,11 @@ impl App {
             KeyCode::Char('c') => self.capture_windows(),
             KeyCode::Char('E') => self.open_editor = true,
             _ if count == 0 => {}
+            KeyCode::Char('C') => {
+                let name = self.routine().map(|r| r.name.clone()).unwrap_or_default();
+                let prompt = format!("Apagar os {count} passos de '{name}'? Os gatilhos continuam.");
+                self.confirm(prompt, ConfirmAction::ClearSteps);
+            }
             KeyCode::Enter | KeyCode::Char('e') => self.edit_step(index),
             KeyCode::Char('x') => self.run_step(index, Selection::Only(index + 1)),
             KeyCode::Char('f') => self.run_step(index, Selection::From(index + 1)),
@@ -1028,10 +1034,22 @@ impl App {
         }
     }
 
+    /// Esvazia os passos; rotina de boot volta só com a espera do desktop.
+    fn clear_steps(&mut self) -> Result<()> {
+        let boot = self.routine().is_some_and(|r| r.has_event(BOOT_EVENT));
+        let desktop = boot.then(Desktop::connect);
+        self.mutate_routine(|r| {
+            r.steps.clear();
+            if boot {
+                boot::ensure_prefix(&mut r.steps, desktop.as_ref());
+            }
+        })
+    }
+
     /// Adiciona ou troca um gatilho; com gatilho a rotina é agendada.
     fn save_trigger(&mut self, editing: Option<usize>, trigger: Trigger) -> Result<()> {
         trigger.validate()?;
-        let boot = matches!(&trigger, Trigger::Event { event } if event == BOOT_EVENT);
+        let boot = trigger.is_event(BOOT_EVENT);
         let desktop = boot.then(Desktop::connect);
         let mut prefixed = false;
         self.mutate_routine(|r| {
@@ -1068,6 +1086,11 @@ impl App {
             ConfirmAction::DeleteStep(index) => self.mutate_routine(|r| {
                 r.steps.remove(index);
             }),
+            ConfirmAction::ClearSteps => {
+                let result = self.clear_steps();
+                self.step_selected = 0;
+                result
+            }
             ConfirmAction::DeleteTrigger(index) => self.mutate_routine(|r| {
                 r.triggers.remove(index);
             }),
