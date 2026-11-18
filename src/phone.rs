@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::constants::{
-    DEFAULT_WAIT_TIMEOUT, PHONE_FOCUS_POLL, PHONE_LONG_PRESS, PHONE_MOTION_COST, PHONE_PATH_TOLERANCE, PHONE_TAP_SLOP,
+    DEFAULT_WAIT_TIMEOUT, PHONE_FOCUS_POLL, PHONE_WAKE_SETTLE, PHONE_LONG_PRESS, PHONE_MOTION_COST, PHONE_PATH_TOLERANCE, PHONE_TAP_SLOP,
     POLL_INTERVAL, RECORD_MIN_SLEEP,
 };
 use crate::draft::{Draft, round_recorded};
@@ -74,10 +74,20 @@ fn wait_ready(timeout: Duration) -> Result<()> {
     }
 }
 
-/// Espera o celular no adb e acende a tela (sem efeito se já estiver acesa).
+/// Espera o celular no adb e acende a tela.
 pub fn prepare(timeout: Duration) -> Result<()> {
     wait_ready(timeout)?;
-    run(&PhoneAction::Key("WAKEUP".into()))
+    wake()
+}
+
+/// Acende a tela, se apagada, e espera ela aceitar toques.
+fn wake() -> Result<()> {
+    if adb_shell("dumpsys power | grep -m1 mWakefulness=")?.contains("Awake") {
+        return Ok(());
+    }
+    adb_shell("input keyevent KEYCODE_WAKEUP")?;
+    std::thread::sleep(PHONE_WAKE_SETTLE);
+    Ok(())
 }
 
 /// Executa um passo `phone`.
@@ -89,6 +99,7 @@ pub fn run(action: &PhoneAction) -> Result<()> {
             format!("input swipe {} {} {} {} {}", from.0, from.1, to.0, to.1, duration.as_millis())
         }
         PhoneAction::Swipe { from, via, to, duration } => trace(*from, via, *to, *duration),
+        PhoneAction::Key(name) if name == "WAKEUP" => return wake(),
         PhoneAction::Key(name) => format!("input keyevent KEYCODE_{name}"),
         PhoneAction::Text(text) => format!("input text {}", shell_quote(&text.replace(' ', "%s"))),
         PhoneAction::Open { package, timeout } => return open(package, *timeout),
@@ -261,10 +272,18 @@ fn unescape_xml(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Pacote do app em foco, ignorando camadas do sistema (bloqueio, painel); vazio se não houver.
+/// Pacote do app em foco; vazio com a tela bloqueada ou sem app.
 fn foreground() -> Result<String> {
-    let output = adb_shell("dumpsys window displays 2>/dev/null | grep -m1 mFocusedApp")?;
-    Ok(focused_package(&output).unwrap_or_default())
+    let output = adb_shell("dumpsys window displays 2>/dev/null | grep -E 'mFocusedApp=|isKeyguardShowing=true'; true")?;
+    Ok(unlocked_focus(&output).unwrap_or_default())
+}
+
+/// App em foco na saída do `dumpsys`, se a tela não estiver bloqueada.
+fn unlocked_focus(output: &str) -> Option<String> {
+    if output.contains("isKeyguardShowing=true") {
+        return None;
+    }
+    output.lines().find_map(focused_package)
 }
 
 /// `mFocusedApp=ActivityRecord{abc u0 com.pkg/.Activity t12}` vira `com.pkg`.
@@ -750,5 +769,7 @@ mod tests {
         let line = "  mFocusedApp=ActivityRecord{48808496 u0 br.com.brainweb.ifood/.AppIconClub t8386}";
         assert_eq!(focused_package(line), Some("br.com.brainweb.ifood".into()));
         assert_eq!(focused_package("  mFocusedApp=null"), None);
+        assert_eq!(unlocked_focus(&format!("{line}\n    isKeyguardShowing=true")), None);
+        assert_eq!(unlocked_focus(line), Some("br.com.brainweb.ifood".into()));
     }
 }

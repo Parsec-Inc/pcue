@@ -7,7 +7,7 @@ mod input;
 mod install;
 mod listen;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -421,6 +421,29 @@ pub fn notify(summary: &str, body: &str) {
     let _ = Command::new("notify-send")
         .args(["--app-name", APP_NAME, summary, body])
         .status();
+}
+
+/// Copia o texto para a área de transferência (wl-copy no Wayland, xclip no X11).
+pub fn copy_text(text: &str) -> Result<()> {
+    let mut command = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        Command::new("wl-copy")
+    } else {
+        let mut xclip = Command::new("xclip");
+        xclip.args(["-selection", "clipboard"]);
+        xclip
+    };
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("{program} não encontrado"))?;
+    child.stdin.take().context("stdin")?.write_all(text.as_bytes())?;
+    if !child.wait()?.success() {
+        bail!("{program} falhou");
+    }
+    Ok(())
 }
 
 /// Literal de string Lua com escapes.

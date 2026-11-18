@@ -638,6 +638,13 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(Paragraph::new(err.as_str()).fg(BAD).wrap(Wrap { trim: true }), error_area);
             }
             draw_buttons(frame, app, buttons, &[("salvar", KeyCode::Enter, true), ("cancelar", KeyCode::Esc, false)]);
+            let copy = " copiar (Ctrl+Y) ";
+            let width = copy.chars().count() as u16;
+            if buttons.width > width {
+                let at = Rect::new(buttons.right() - width, buttons.y, width, 1);
+                frame.buffer_mut().set_stringn(at.x, at.y, copy, width as usize, Style::new().fg(Color::White).bg(SELECTED_BG));
+                app.hits.push((at, Hit::CopyInput));
+            }
         }
         Modal::Confirm { prompt, .. } => {
             let area = popup(app, full, 60, 7);
@@ -1071,6 +1078,7 @@ const HELP_GENERAL: &[&str] = &[
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
     "  mudanças ficam pendentes até S (ou Ctrl+S) salvar · u descarta · sair com pendências pede confirmação",
+    "  nos campos de texto, Ctrl+Y copia o valor inteiro para a área de transferência",
     "  P parâmetros: {nome} nos passos; ao rodar a TUI pergunta os valores (pcue run rotina nome=valor, call rotina nome=valor)",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
 ];

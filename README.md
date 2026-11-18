@@ -165,6 +165,7 @@ salvo.
 
 | Onde | Teclas |
 |---|---|
+| Campos de texto | `Ctrl+Y` (ou o botão copiar) copia o valor inteiro para a área de transferência · `Ctrl+A`/`Ctrl+E` início/fim · `Ctrl+U` apaga até o cursor |
 | Geral | `S`/`Ctrl+S` salva · `u` descarta as alterações · `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |

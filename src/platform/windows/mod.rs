@@ -335,6 +335,38 @@ pub fn private_file(path: &Path) -> Result<std::fs::File> {
 /// Sem notificações no Windows por enquanto; a falha fica no log e no histórico.
 pub fn notify(_summary: &str, _body: &str) {}
 
+/// Copia o texto para a área de transferência.
+pub fn copy_text(text: &str) -> Result<()> {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    // SAFETY: a memória tem o tamanho de `wide` e só passa a ser do sistema se SetClipboardData der certo.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            bail!("área de transferência ocupada");
+        }
+        EmptyClipboard();
+        let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        let target = GlobalLock(memory) as *mut u16;
+        let copied = !target.is_null();
+        if copied {
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
+            GlobalUnlock(memory);
+        }
+        let set = copied && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+        if !set {
+            GlobalFree(memory);
+        }
+        CloseClipboard();
+        if !set {
+            bail!("não foi possível copiar");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use windows_sys::Win32::Foundation::HWND;

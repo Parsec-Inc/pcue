@@ -60,6 +60,7 @@ pub enum Hit {
     ReviewRow(usize),
     Backdrop,
     StopRecording,
+    CopyInput,
 }
 
 /// Janela sobreposta ativa.
@@ -734,6 +735,7 @@ impl App {
 
     fn on_hit(&mut self, hit: Hit, double: bool) {
         match hit {
+            Hit::CopyInput => self.copy_input(),
             Hit::StopRecording => {
                 if let Some(recording) = &self.recording {
                     recording.session.stop();
@@ -1001,6 +1003,7 @@ impl App {
                 ..
             } => match key.code {
                 KeyCode::Esc => self.modal = self.stashed_review.take(),
+                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => self.copy_input(),
                 KeyCode::Char('g')
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(purpose, InputPurpose::Notification(_) | InputPurpose::Device { .. }) =>
@@ -1030,6 +1033,15 @@ impl App {
                     }
                 }
             },
+        }
+    }
+
+    /// Copia o texto do campo aberto para a área de transferência.
+    fn copy_input(&mut self) {
+        let Some(Modal::Input { input, .. }) = &self.modal else { return };
+        match crate::platform::copy_text(input.value()) {
+            Ok(()) => self.info("copiado para a área de transferência"),
+            Err(err) => self.error(format!("não copiou: {err:#}")),
         }
     }
 

@@ -63,6 +63,8 @@ pub const PHONE_PATH_TOLERANCE: f64 = 12.0;
 pub const PHONE_MOTION_COST: Duration = Duration::from_millis(30);
 /// Celular: intervalo entre consultas do app em primeiro plano durante a gravação.
 pub const PHONE_FOCUS_POLL: Duration = Duration::from_millis(300);
+/// Tempo para a tela recém-acesa começar a aceitar toques.
+pub const PHONE_WAKE_SETTLE: Duration = Duration::from_millis(800);
 /// Celular: duração padrão do `phone swipe`.
 pub const DEFAULT_PHONE_SWIPE: Duration = Duration::from_millis(300);
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
