@@ -7,9 +7,11 @@ mod input;
 mod install;
 mod listen;
 
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -24,7 +26,7 @@ use apps::DesktopIndex;
 use hypr::Hypr;
 
 use crate::config::Workspace;
-use crate::constants::{APP_NAME, BOOT_WAIT_TIMEOUT, DAEMON_SOCKET, KNOWN_BARS, POLL_INTERVAL};
+use crate::constants::{APP_NAME, BOOT_WAIT_TIMEOUT, DAEMON_SOCKET, DESKTOP_CHANGE_EVENTS, KNOWN_BARS, POLL_INTERVAL};
 use crate::launcher::anchored_regex;
 use crate::platform::Window;
 use crate::script::quote;
@@ -43,6 +45,22 @@ impl Desktop {
             hypr: Hypr::detect(),
             apps: OnceLock::new(),
         }
+    }
+
+    /// Avisa o instante de cada mudança de janela ou workspace.
+    pub fn watch_changes(&self) -> Option<mpsc::Receiver<Instant>> {
+        self.hypr.as_ref()?;
+        let stream = UnixStream::connect(hypr::event_socket().ok()?).ok()?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let name = line.split_once(">>").map_or("", |(name, _)| name);
+                if DESKTOP_CHANGE_EVENTS.contains(&name) && sender.send(Instant::now()).is_err() {
+                    return;
+                }
+            }
+        });
+        Some(receiver)
     }
 
     /// Nome do gerenciador de janelas controlado, se houver.

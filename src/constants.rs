@@ -39,7 +39,12 @@ pub const MOVE_FRAME: Duration = Duration::from_millis(16);
 /// Distância mínima, em pixels, para a gravação tratar um clique como arrasto.
 pub const DRAG_THRESHOLD: i32 = 6;
 pub const RECORDED_DRAG_MIN: Duration = Duration::from_millis(100);
-pub const RECORDED_DRAG_MAX: Duration = Duration::from_secs(3);
+/// Gravação: intervalo entre leituras da posição do cursor.
+pub const CURSOR_SAMPLE: Duration = Duration::from_millis(8);
+/// Gravação: por quanto tempo guardar as posições do cursor fora de um arrasto.
+pub const CURSOR_HISTORY: Duration = Duration::from_secs(5);
+/// Gravação: desvio máximo, em pixels, ao enxugar o trajeto de um arrasto.
+pub const DRAG_PATH_TOLERANCE: f64 = 2.0;
 
 pub const RECORD_COUNTDOWN_SECS: u64 = 3;
 pub const RECORD_MIN_SLEEP: Duration = Duration::from_millis(100);
@@ -108,3 +113,7 @@ pub const DEFAULT_EDITOR: &str = "nano";
 pub const DEFAULT_EDITOR: &str = "notepad";
 /// Gravação: intervalo entre consultas ao desktop.
 pub const DESKTOP_POLL: Duration = Duration::from_millis(150);
+/// Gravação: eventos do Hyprland que pedem uma nova consulta ao desktop.
+#[cfg(target_os = "linux")]
+pub const DESKTOP_CHANGE_EVENTS: [&str; 6] =
+    ["openwindow", "closewindow", "activewindowv2", "workspacev2", "focusedmonv2", "movewindowv2"];

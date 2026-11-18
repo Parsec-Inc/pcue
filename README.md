@@ -190,7 +190,7 @@ key SUPER+2
 type "texto"
 click [left|right|middle] [hold=CTRL] X,Y
 click window=REGEX [nth=N] at=X,Y
-drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y to=X,Y [duration=300ms]
+drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y [via=X,Y@120ms;X,Y@300ms] to=X,Y [duration=300ms]
 hold SUPER                      # ou mouse_left|mouse_right|mouse_middle [X,Y]
 move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
 release SUPER
@@ -247,9 +247,12 @@ os passos à vontade. No Windows o prefixo é só `wait_monitors` e o `sleep`.
 solta tudo. É o caso comum de `SUPER` + botão direito para redimensionar uma
 janela: `drag right hold=SUPER from=800,400 to=800,700`. Para outras
 combinações, `hold` aperta uma tecla ou botão e mantém até o `release`; o que
-ficar apertado é solto no fim da rotina, mesmo se ela falhar. Na gravação,
-arrastar com o mouse vira `drag`, e um clique com modificador segurado vira
-`click hold=CTRL ...`.
+ficar apertado é solto no fim da rotina, mesmo se ela falhar. `via=` lista
+pontos intermediários e quando passar por cada um, contando do início do
+arrasto; o cursor anda entre eles no tempo gravado. Na gravação, arrastar com
+o mouse vira `drag` com o trajeto inteiro (idas e vindas incluídas), e um
+clique com modificador segurado vira `click hold=CTRL ...`. A posição de cada
+clique é a do instante em que o botão desceu, mesmo em sequências rápidas.
 
 `click window=... nth=2` mira a segunda janela da class na ordem em que foram
 abertas, então dá para gravar cliques em duas instâncias do mesmo app.
