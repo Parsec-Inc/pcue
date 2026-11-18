@@ -7,7 +7,7 @@ use crate::constants::{CLICK_MOVE_SETTLE, MOVE_FRAME};
 use crate::launcher::{LaunchSpec, anchored_regex, launch, nth_window, windows_of};
 use crate::platform::{Desktop, VirtualInput};
 use crate::progress::{self, Progress};
-use crate::script::{ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, parse_steps};
+use crate::script::{ClickTarget, Guard, Input, Line, MAX_CALL_DEPTH, Step, WindowRef, parse_steps};
 use crate::keys::Key;
 use crate::utils::log;
 
@@ -161,14 +161,12 @@ impl<'a> Player<'a> {
                 self.glide(from, to, *duration)
             }
             Step::Drag { button, hold, window, from, to, duration } => {
-                let window = window.as_ref().map(|(class, nth)| (class.as_str(), *nth));
-                let origin = window_origin(desktop, window, timeout)?;
+                let origin = window_origin(desktop, window.as_ref(), timeout)?;
                 let start = (origin.0 + from.0, origin.1 + from.1);
                 let end = (origin.0 + to.0, origin.1 + to.1);
                 self.scoped(|player| {
                     player.press_keys(hold)?;
-                    player.desktop.move_cursor(start.0, start.1)?;
-                    std::thread::sleep(CLICK_MOVE_SETTLE);
+                    player.move_and_settle(start)?;
                     player.press(Input::Mouse(*button))?;
                     player.glide(start, end, *duration)
                 })
@@ -177,7 +175,10 @@ impl<'a> Player<'a> {
     }
 
     fn point_at(&self, target: &ClickTarget) -> Result<()> {
-        let (x, y) = resolve_click(self.desktop, target, self.timeout)?;
+        self.move_and_settle(resolve_click(self.desktop, target, self.timeout)?)
+    }
+
+    fn move_and_settle(&self, (x, y): (i32, i32)) -> Result<()> {
         self.desktop.move_cursor(x, y)?;
         std::thread::sleep(CLICK_MOVE_SETTLE);
         Ok(())
@@ -210,9 +211,9 @@ impl<'a> Player<'a> {
 
     /// Solta, na ordem inversa, o que foi apertado depois de `mark`.
     fn release_to(&mut self, mark: usize) {
-        while self.held.len() > mark {
-            let input = self.held.pop().expect("held acima de mark");
-            if let Some(device) = self.input.as_mut() {
+        let pressed = self.held.split_off(mark.min(self.held.len()));
+        if let Some(device) = self.input.as_mut() {
+            for input in pressed.into_iter().rev() {
                 let _ = device.release(input);
             }
         }
@@ -275,20 +276,16 @@ fn describe(step: &Step) -> String {
 
 /// Posição global do clique; janela-alvo é focada antes.
 fn resolve_click(desktop: &Desktop, target: &ClickTarget, timeout: Duration) -> Result<(i32, i32)> {
-    let (window, x, y) = match target {
-        ClickTarget::Absolute { x, y } => (None, *x, *y),
-        ClickTarget::Window { class, nth, x, y } => (Some((class.as_str(), *nth)), *x, *y),
-    };
-    let (left, top) = window_origin(desktop, window, timeout)?;
-    Ok((left + x, top + y))
+    let (left, top) = window_origin(desktop, target.window.as_ref(), timeout)?;
+    Ok((left + target.x, top + target.y))
 }
 
 /// Canto da janela (focada antes), ou 0,0 para coordenadas absolutas.
-fn window_origin(desktop: &Desktop, window: Option<(&str, usize)>, timeout: Duration) -> Result<(i32, i32)> {
+fn window_origin(desktop: &Desktop, window: Option<&WindowRef>, timeout: Duration) -> Result<(i32, i32)> {
     let Some((class, nth)) = window else { return Ok((0, 0)) };
-    let found = nth_window(desktop, class, nth, timeout)?;
+    let found = nth_window(desktop, class, *nth, timeout)?;
     desktop.focus_window(&found)?;
     std::thread::sleep(CLICK_MOVE_SETTLE);
-    let found = nth_window(desktop, class, nth, timeout)?;
+    let found = nth_window(desktop, class, *nth, timeout)?;
     Ok((found.at[0], found.at[1]))
 }

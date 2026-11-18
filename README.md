@@ -186,7 +186,7 @@ type "texto"
 click [left|right|middle] [hold=CTRL] X,Y
 click window=REGEX [nth=N] at=X,Y
 drag [left|right|middle] [hold=SUPER] [window=REGEX] from=X,Y to=X,Y [duration=300ms]
-hold SUPER                      # ou mouse_left|mouse_right|mouse_middle [at=X,Y]
+hold SUPER                      # ou mouse_left|mouse_right|mouse_middle [X,Y]
 move X,Y [duration=300ms]       # ou move window=REGEX at=X,Y
 release SUPER
 scroll -3

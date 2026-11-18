@@ -1036,9 +1036,7 @@ impl App {
 
     /// Esvazia os passos; rotina de boot volta só com a espera do desktop.
     fn clear_steps(&mut self) -> Result<()> {
-        let boot = self.routine().is_some_and(|r| {
-            r.triggers.iter().any(|t| matches!(t, Trigger::Event { event } if event == BOOT_EVENT))
-        });
+        let boot = self.routine().is_some_and(|r| r.has_event(BOOT_EVENT));
         let desktop = boot.then(Desktop::connect);
         self.mutate_routine(|r| {
             r.steps.clear();
@@ -1051,7 +1049,7 @@ impl App {
     /// Adiciona ou troca um gatilho; com gatilho a rotina é agendada.
     fn save_trigger(&mut self, editing: Option<usize>, trigger: Trigger) -> Result<()> {
         trigger.validate()?;
-        let boot = matches!(&trigger, Trigger::Event { event } if event == BOOT_EVENT);
+        let boot = trigger.is_event(BOOT_EVENT);
         let desktop = boot.then(Desktop::connect);
         let mut prefixed = false;
         self.mutate_routine(|r| {

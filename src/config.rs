@@ -114,11 +114,12 @@ impl Routine {
 
     /// Rotina ativa que reage ao evento.
     pub fn listens_to(&self, event: &str) -> bool {
-        self.enabled
-            && self
-                .triggers
-                .iter()
-                .any(|t| matches!(t, Trigger::Event { event: e } if e == event))
+        self.enabled && self.has_event(event)
+    }
+
+    /// Tem gatilho para o evento, ativa ou não.
+    pub fn has_event(&self, event: &str) -> bool {
+        self.triggers.iter().any(|t| t.is_event(event))
     }
 
     /// Erros de coerência da rotina.
@@ -133,6 +134,11 @@ impl Routine {
 }
 
 impl Trigger {
+    /// Gatilho do evento `name`.
+    pub fn is_event(&self, name: &str) -> bool {
+        matches!(self, Trigger::Event { event } if event == name)
+    }
+
     /// Confere horário, intervalo e nome do evento.
     pub fn validate(&self) -> Result<()> {
         match self {

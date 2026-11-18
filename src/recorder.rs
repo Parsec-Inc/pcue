@@ -331,11 +331,12 @@ impl<'a> Recorder<'a> {
             .filter(|w| w.on_screen && w.contains(x, y))
             .min_by_key(|w| w.focus_rank);
         let target = match under {
-            Some(window) => {
-                let (class, nth) = class_and_nth(window, &windows);
-                ClickTarget::Window { class, nth, x: x - window.at[0], y: y - window.at[1] }
-            }
-            None => ClickTarget::Absolute { x, y },
+            Some(window) => ClickTarget {
+                window: Some(class_and_nth(window, &windows)),
+                x: x - window.at[0],
+                y: y - window.at[1],
+            },
+            None => ClickTarget { window: None, x, y },
         };
         let modifiers = self.held_modifiers();
         self.press = Some(Press { button, time, screen: (x, y), target, modifiers });
@@ -351,11 +352,8 @@ impl<'a> Recorder<'a> {
             self.push(press.time, time, ActionKind::Click, Step::Click { button, hold, target: press.target });
             return;
         }
-        let (window, from) = match press.target {
-            ClickTarget::Window { class, nth, x, y } => (Some((class, nth)), (x, y)),
-            ClickTarget::Absolute { x, y } => (None, (x, y)),
-        };
-        let to = (from.0 + x - press.screen.0, from.1 + y - press.screen.1);
+        let ClickTarget { window, x: from_x, y: from_y } = press.target;
+        let (from, to) = ((from_x, from_y), (from_x + x - press.screen.0, from_y + y - press.screen.1));
         let elapsed = time.saturating_duration_since(press.time).clamp(RECORDED_DRAG_MIN, RECORDED_DRAG_MAX);
         let step = Step::Drag { button, hold, window, from, to, duration: draft::round_recorded(elapsed) };
         self.push(press.time, time, ActionKind::Click, step);
