@@ -129,6 +129,9 @@ pub enum ConfirmAction {
     DeleteTrigger(usize),
     MakeFree,
     Update,
+    Discard,
+    Quit,
+    SaveAndRun(Selection),
 }
 
 /// Mensagem na barra de status.
@@ -184,6 +187,8 @@ pub struct Slides {
 pub struct App {
     path: PathBuf,
     pub config: Config,
+    /// Cópia do que está gravado no disco.
+    saved: Config,
     pub selected: usize,
     pub focus: Pane,
     pub step_selected: usize,
@@ -226,6 +231,7 @@ impl App {
         let runs = history::all();
         Ok(Self {
             path,
+            saved: config.clone(),
             config,
             selected: 0,
             focus: Pane::Routines,
@@ -259,6 +265,11 @@ impl App {
             last_progress: Instant::now(),
             quit: false,
         })
+    }
+
+    /// Há mudanças que ainda não foram gravadas.
+    pub fn dirty(&self) -> bool {
+        self.config != self.saved
     }
 
     pub fn should_quit(&self) -> bool {
@@ -368,15 +379,47 @@ impl App {
         self.slides.modal = Slide::default();
     }
 
-    /// Aplica a mudança numa cópia; só grava se continuar válida.
+    /// Aplica a mudança numa cópia; só fica se continuar válida. Não grava.
     fn mutate(&mut self, change: impl FnOnce(&mut Config) -> Result<()>) -> Result<()> {
         let mut draft = self.config.clone();
         change(&mut draft)?;
-        draft.save(&self.path)?;
+        draft.validate()?;
         self.config = draft;
-        self.flash = Some(Instant::now());
         self.clamp();
         Ok(())
+    }
+
+    fn save(&mut self) -> Result<()> {
+        self.config.save(&self.path)?;
+        self.saved = self.config.clone();
+        self.flash = Some(Instant::now());
+        Ok(())
+    }
+
+    fn save_now(&mut self) {
+        if !self.dirty() {
+            return self.info("nada para salvar");
+        }
+        match self.save() {
+            Ok(()) => self.info("alterações salvas"),
+            Err(err) => self.error(format!("{err:#}")),
+        }
+    }
+
+    fn ask_discard(&mut self) {
+        if self.dirty() {
+            self.confirm("Descartar as alterações e voltar ao que está salvo?".into(), ConfirmAction::Discard);
+        } else {
+            self.info("nada para descartar");
+        }
+    }
+
+    fn ask_quit(&mut self) {
+        if self.dirty() {
+            self.confirm("Há alterações não salvas. Sair e perder essas alterações?".into(), ConfirmAction::Quit);
+        } else {
+            self.quit = true;
+        }
     }
 
     /// Mudança na rotina selecionada.
@@ -422,8 +465,11 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if let Some(recording) = &self.recording {
                 recording.session.stop();
-            } else {
+            } else if matches!(self.modal, Some(Modal::Confirm { action: ConfirmAction::Quit, .. })) {
                 self.quit = true;
+            } else {
+                self.modal = None;
+                self.ask_quit();
             }
             return;
         }
@@ -437,8 +483,13 @@ impl App {
         if self.filter.as_ref().is_some_and(|f| f.editing) && self.on_filter_key(key) {
             return;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            return self.save_now();
+        }
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('q') => self.ask_quit(),
+            KeyCode::Char('S') => self.save_now(),
+            KeyCode::Char('u') => self.ask_discard(),
             KeyCode::Char('?') => self.open_modal(Modal::Help),
             KeyCode::Char('L') => self.open_log(),
             KeyCode::Char('H') => self.open_history(None),
@@ -1097,6 +1148,23 @@ impl App {
             ConfirmAction::MakeFree => self.mutate_routine(|r| {
                 r.triggers.clear();
             }),
+            ConfirmAction::Discard => {
+                self.config = self.saved.clone();
+                self.clamp();
+                self.info("alterações descartadas");
+                return;
+            }
+            ConfirmAction::Quit => {
+                self.quit = true;
+                return;
+            }
+            ConfirmAction::SaveAndRun(selection) => {
+                if let Err(err) = self.save() {
+                    return self.error(format!("{err:#}"));
+                }
+                self.run_selected(selection);
+                return;
+            }
             ConfirmAction::Update => {
                 if let Some(release) = self.update.clone() {
                     self.info(format!("baixando pcue {}...", release.version));
@@ -1174,6 +1242,12 @@ impl App {
         let Some(name) = self.routine().map(|r| r.name.clone()) else { return };
         if self.running.contains_key(&name) {
             return self.error(format!("'{name}' já está rodando (s para parar)"));
+        }
+        if self.dirty() {
+            return self.confirm(
+                "A execução usa o que está salvo. Salvar as alterações e rodar?".into(),
+                ConfirmAction::SaveAndRun(selection),
+            );
         }
         match spawn_run(&name, "manual", TUI_RUN_DELAY_MS, selection) {
             Ok(child) => {
@@ -1348,7 +1422,7 @@ impl App {
                 }
                 self.focus = Pane::Steps;
                 self.step_selected = self.routine().map_or(0, |r| r.steps.len().saturating_sub(1));
-                self.info(format!("{total} passo(s) gravados em '{routine}'"));
+                self.info(format!("{total} passo(s) gravados em '{routine}' (S salva)"));
             }
             Err(err) => self.error(format!("gravação: {err:#}")),
         }
@@ -1400,7 +1474,7 @@ impl App {
         self.mutate_routine(|r| {
             r.steps = steps;
         })?;
-        self.info(format!("{total} passo(s) salvos"));
+        self.info(format!("{total} passo(s) aplicados (S salva)"));
         Ok(())
     }
 }

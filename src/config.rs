@@ -11,7 +11,7 @@ use crate::schedule::{Weekday, parse_clock};
 use crate::script::{self, parse_duration};
 
 /// Arquivo de configuração completo.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub settings: Settings,
@@ -27,7 +27,7 @@ struct Bundle {
 }
 
 /// Ajustes globais.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub timeout_secs: u64,
@@ -35,7 +35,7 @@ pub struct Settings {
 }
 
 /// Rotina: livre quando não tem gatilhos, agendada quando tem.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Routine {
     pub name: String,
     #[serde(default = "default_true")]
