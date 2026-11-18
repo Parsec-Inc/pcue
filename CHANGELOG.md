@@ -1,3 +1,9 @@
+## 0.6.0 (2026-11-18)
+
+### Feat
+
+- **recorder**: trajeto completo do arrasto com via=, posição do cursor no instante do evento e atribuição mais estreita às mudanças do desktop
+
 ## 0.5.0 (2026-11-18)
 
 ### Feat
