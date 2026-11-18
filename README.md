@@ -246,8 +246,10 @@ pcue também observa o desktop e junta as ações com o que elas causaram:
 | uma janela nova de um app já aberto apareceu | teclas originais + `wait_window class=X nth=N` | |
 
 Ao encerrar, a tela de revisão mostra cada trecho com a forma escolhida:
-`Tab`/`←`/`→` troca a forma, `p` liga ou desliga a pausa antes do trecho, `d`
-apaga e `⏎` salva. Pausas longas (de quando você pensou) ficam visíveis para
+`Tab`/`←`/`→` troca a forma, `p` liga ou desliga a pausa antes do trecho, `e`
+edita o passo, `s` separa um trecho de vários passos em um por passo, `d`
+apaga e `⏎` salva. Editar um trecho de vários passos separa ele antes e abre
+o primeiro. Pausas longas (de quando você pensou) ficam visíveis para
 desligar. `SUPER+F9` pausa a gravação (para senhas) e `SUPER+F10` encerra.
 
 ### Rotinas de boot

@@ -113,6 +113,7 @@ pub enum InputPurpose {
     Import,
     Params,
     RunArg(Selection),
+    ReviewStep(usize),
 }
 
 /// O que fazer com a opção escolhida.
@@ -201,6 +202,8 @@ pub struct App {
     run_args: Vec<Arg>,
     /// Último valor usado em cada parâmetro (rotina, parâmetro), só nesta sessão.
     last_args: HashMap<(String, String), String>,
+    /// Revisão guardada enquanto um passo dela é editado.
+    stashed_review: Option<Modal>,
     pub status: Option<Status>,
     pub runs: Vec<Run>,
     history_modified: Option<SystemTime>,
@@ -247,6 +250,7 @@ impl App {
             modal_at: Instant::now(),
             run_args: Vec::new(),
             last_args: HashMap::new(),
+            stashed_review: None,
             status: None,
             runs,
             history_modified: history::modified(),
@@ -477,6 +481,7 @@ impl App {
                 self.quit = true;
             } else {
                 self.modal = None;
+                self.stashed_review = None;
                 self.ask_quit();
             }
             return;
@@ -921,6 +926,16 @@ impl App {
                             item.keep_pause = !item.keep_pause;
                         }
                     }
+                    KeyCode::Char('s') => draft.split(*selected),
+                    KeyCode::Char('e') => {
+                        let index = *selected;
+                        draft.split(index);
+                        let Some(step) = draft.items.get(index).and_then(|i| i.current().steps.first().cloned()) else {
+                            return;
+                        };
+                        self.stashed_review = self.modal.take();
+                        self.open_input("Editar passo gravado", &step_hint(), &step, InputPurpose::ReviewStep(index));
+                    }
                     KeyCode::Char('d') | KeyCode::Delete => {
                         if item.is_some() {
                             draft.items.remove(*selected);
@@ -971,14 +986,14 @@ impl App {
                 error,
                 ..
             } => match key.code {
-                KeyCode::Esc => self.modal = None,
+                KeyCode::Esc => self.modal = self.stashed_review.take(),
                 KeyCode::Enter => {
                     let (purpose, value) = (*purpose, input.value().trim().to_string());
                     let opened = self.modal_at;
                     match self.apply_input(purpose, &value) {
                         Ok(()) => {
                             if self.modal_at == opened {
-                                self.modal = None;
+                                self.modal = self.stashed_review.take();
                             }
                         }
                         Err(err) => {
@@ -1064,6 +1079,12 @@ impl App {
                 self.run_args.push((param.name.clone(), value.clone()));
                 self.last_args.insert(key, value);
                 self.continue_run(selection);
+            }
+            InputPurpose::ReviewStep(index) => {
+                let step = check_step(None, value)?;
+                if let Some(Modal::Review { draft, .. }) = &mut self.stashed_review {
+                    draft.edit(index, step);
+                }
             }
             InputPurpose::Export => {
                 let name = self.routine().map(|r| r.name.clone()).context("nenhuma rotina")?;

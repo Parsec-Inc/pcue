@@ -82,6 +82,10 @@ pub struct Item {
 }
 
 impl Item {
+    fn recorded(step: String) -> Self {
+        Self::new(vec![Variant { label: "gravado", steps: vec![step] }])
+    }
+
     fn new(variants: Vec<Variant>) -> Self {
         Self {
             variants,
@@ -125,6 +129,23 @@ impl Draft {
     /// Quantos trechos têm mais de uma forma.
     pub fn choices(&self) -> usize {
         self.items.iter().filter(|i| i.variants.len() > 1).count()
+    }
+
+    /// Troca o trecho por um trecho por passo da forma escolhida; a pausa fica no primeiro.
+    pub fn split(&mut self, index: usize) {
+        let Some(item) = self.items.get(index).filter(|i| i.current().steps.len() > 1) else { return };
+        let mut pieces: Vec<Item> = item.current().steps.iter().map(|step| Item::recorded(step.clone())).collect();
+        pieces[0].pause = item.pause;
+        pieces[0].keep_pause = item.keep_pause;
+        self.items.splice(index..=index, pieces);
+    }
+
+    /// Substitui o trecho por um único passo, mantendo a pausa antes dele.
+    pub fn edit(&mut self, index: usize, step: String) {
+        if let Some(item) = self.items.get_mut(index) {
+            item.variants = vec![Variant { label: "editado", steps: vec![step] }];
+            item.chosen = 0;
+        }
     }
 }
 
@@ -178,7 +199,7 @@ pub fn build(actions: &[Action], events: &[DesktopEvent]) -> Draft {
         let Some((start, variants)) = piece else { continue };
         builder.plain(&actions[next..start]);
         let begin = actions.get(start).filter(|_| start < upto).map_or(event.at, |a| a.start);
-        builder.push(begin, event.at, variants);
+        builder.push(begin, event.at, Item::new(variants));
         next = upto;
     }
     builder.plain(&actions[next..]);
@@ -325,8 +346,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn push(&mut self, start: Instant, end: Instant, variants: Vec<Variant>) {
-        let mut item = Item::new(variants);
+    fn push(&mut self, start: Instant, end: Instant, mut item: Item) {
         item.pause = self.last_end.and_then(|last| pause_between(last, start));
         self.draft.items.push(item);
         self.last_end = Some(end);
@@ -335,11 +355,7 @@ impl Builder {
     /// Ações sem mudança no desktop: um trecho por ação, sem alternativas.
     fn plain(&mut self, actions: &[Action]) {
         for action in actions {
-            let variant = Variant {
-                label: "gravado",
-                steps: vec![action.step.to_string()],
-            };
-            self.push(action.start, action.end, vec![variant]);
+            self.push(action.start, action.end, Item::recorded(action.step.to_string()));
         }
     }
 }
@@ -486,6 +502,24 @@ mod tests {
         }];
         let draft = build(&actions, &events);
         assert_eq!(draft.render(), vec!["key CTRL+S", "sleep 300ms", "launch zen-browser workspace=6 class=zen"]);
+    }
+
+    #[test]
+    fn split_and_edit_keep_the_pause() {
+        let c = Clock(Instant::now());
+        let actions = vec![c.combo(0, "CTRL+S"), c.combo(300, "SUPER+3")];
+        let events = vec![focused(c.at(400), Some(seen("k", "kitty", "3")), "3", true)];
+        let mut draft = build(&actions, &events);
+        let focus = &mut draft.items[1];
+        focus.cycle(false);
+        assert_eq!(focus.current().steps, vec!["key SUPER+3"]);
+        draft.items.push(Item::recorded("type oi".into()));
+        draft.items[2].variants[0].steps.push("key RETURN".into());
+        draft.items[2].pause = Some(Duration::from_secs(2));
+        draft.split(2);
+        assert_eq!(draft.items.len(), 4);
+        draft.edit(2, "type olá".into());
+        assert_eq!(draft.render()[3..], ["sleep 2s", "type olá", "key RETURN"]);
     }
 
     #[test]

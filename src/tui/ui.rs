@@ -825,7 +825,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, area: Rect, routine: &str, draf
     .areas(inner);
     frame.render_widget(
         Paragraph::new(format!(
-            "{} trecho(s) com alternativas. Tab/←→ troca a forma · p liga/desliga a pausa antes · d apaga · ⏎ salva · Esc descarta",
+            "{} trecho(s) com alternativas. Tab/←→ troca a forma · p liga/desliga a pausa antes · e edita · s separa em passos · d apaga · ⏎ salva · Esc descarta",
             draft.choices()
         ))
         .fg(MUTED)
@@ -881,7 +881,18 @@ fn draw_review(frame: &mut Frame, app: &mut App, area: Rect, routine: &str, draf
     }
     let preview = pane_block("Formas deste trecho", false);
     frame.render_widget(Paragraph::new(lines).block(preview).wrap(Wrap { trim: false }), preview_area);
-    draw_buttons(frame, app, buttons, &[("salvar ⏎", KeyCode::Enter, true), ("descartar", KeyCode::Esc, false)]);
+    draw_buttons(
+        frame,
+        app,
+        buttons,
+        &[
+            ("salvar ⏎", KeyCode::Enter, true),
+            ("editar (e)", KeyCode::Char('e'), false),
+            ("separar (s)", KeyCode::Char('s'), false),
+            ("apagar (d)", KeyCode::Char('d'), false),
+            ("descartar", KeyCode::Esc, false),
+        ],
+    );
 }
 
 fn draw_recording(frame: &mut Frame, app: &mut App) {
@@ -1051,7 +1062,7 @@ const HELP_GENERAL: &[&str] = &[
     "Gravação (R no painel de passos)",
     "  SUPER+F9 pausa/retoma (use em senhas) · SUPER+F10 encerra",
     "  apps abertos viram launch, troca de janela vira focus/workspace; cliques ficam relativos à janela",
-    "  ao encerrar, revise: Tab troca a forma do trecho · p liga/desliga a pausa · d apaga · ⏎ salva",
+    "  ao encerrar, revise: Tab troca a forma · p liga/desliga a pausa · e edita · s separa · d apaga · ⏎ salva",
     "",
     "Geral",
     "  mouse: clique seleciona, duplo clique roda/edita, roda do mouse rola",
