@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericNamespaced, Name, ToNsName};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
-pub use events::event_sources;
+pub use events::{event_sources, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;

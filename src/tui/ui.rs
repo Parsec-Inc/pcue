@@ -344,7 +344,7 @@ fn draw_summary(frame: &mut Frame, area: Rect, app: &App, routine: &Routine) {
 
 fn trigger_sprite(trigger: &Trigger) -> Sprite {
     match trigger {
-        Trigger::Event { .. } => Sprite::Event,
+        Trigger::Event { .. } | Trigger::Notification { .. } => Sprite::Event,
         Trigger::Daily { .. } => Sprite::Clock,
         Trigger::Interval { .. } => Sprite::Interval,
     }
@@ -391,6 +391,7 @@ fn draw_triggers(frame: &mut Frame, area: Rect, app: &mut App, routine: &Routine
                 Trigger::Event { .. } => "⚡ ",
                 Trigger::Daily { .. } => "◷ ",
                 Trigger::Interval { .. } => "↻ ",
+                Trigger::Notification { .. } => "✉ ",
             };
             let mut spans = vec![Span::styled(icon, Style::new().fg(WARN)), Span::raw(trigger.to_string())];
             if let Some(next) = describe_next(trigger, &now) {

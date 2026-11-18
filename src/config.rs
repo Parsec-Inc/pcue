@@ -6,7 +6,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS, RESERVED_PARAMS};
+use regex::{Regex, RegexBuilder};
+
+use crate::constants::{DEFAULT_STARTUP_DELAY_MS, DEFAULT_TIMEOUT_SECS, NOTIFICATION_PARAMS, RESERVED_PARAMS};
+use crate::platform::Notification;
 use crate::schedule::{Weekday, parse_clock};
 use crate::script::{self, Arg, Line, is_comment, parse_duration};
 
@@ -70,6 +73,15 @@ pub enum Trigger {
     },
     Interval {
         every: String,
+    },
+    /// Notificação de app; cada filtro é regex sem diferenciar maiúsculas e vazio aceita tudo.
+    Notification {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        app: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        body: String,
     },
 }
 
@@ -165,7 +177,7 @@ impl Routine {
             if RESERVED_PARAMS.contains(&param.name.as_str()) || !names.insert(param.name.as_str()) {
                 bail!("parâmetro '{}' repetido ou reservado", param.name);
             }
-            if self.is_scheduled() && param.default.is_none() {
+            if param.default.is_none() && self.triggers.iter().any(|t| !t.provides().contains(&param.name.as_str())) {
                 bail!("rotina agendada precisa de padrão para o parâmetro {}", param.name);
             }
         }
@@ -197,10 +209,65 @@ impl Trigger {
         matches!(self, Trigger::Event { event } if event == name)
     }
 
-    /// Confere horário, intervalo e nome do evento.
+    /// Gatilho de notificação que aceita esta notificação.
+    pub fn catches(&self, notification: &Notification) -> bool {
+        let Trigger::Notification { app, title, body } = self else {
+            return false;
+        };
+        [(app, &notification.app), (title, &notification.title), (body, &notification.body)]
+            .into_iter()
+            .all(|(filter, value)| filter.is_empty() || filter_regex(filter).is_ok_and(|re| re.is_match(value)))
+    }
+
+    /// Parâmetros que o gatilho preenche ao disparar.
+    pub fn provides(&self) -> &'static [&'static str] {
+        match self {
+            Trigger::Notification { .. } => &NOTIFICATION_PARAMS,
+            _ => &[],
+        }
+    }
+
+    /// Gatilho de notificação a partir de `app=x, titulo=y, texto=z`.
+    pub fn parse_notification(raw: &str) -> Result<Self> {
+        let (mut app, mut title, mut body) = (String::new(), String::new(), String::new());
+        for (key, value) in key_values(raw) {
+            let value = value.with_context(|| format!("use chave=valor em '{key}'"))?;
+            let slot = match key {
+                "app" => &mut app,
+                "titulo" | "título" => &mut title,
+                "texto" => &mut body,
+                other => bail!("filtro desconhecido '{other}' (app, titulo, texto)"),
+            };
+            *slot = value.to_string();
+        }
+        let trigger = Trigger::Notification { app, title, body };
+        trigger.validate()?;
+        Ok(trigger)
+    }
+
+    /// Filtros no formato que `parse_notification` lê.
+    pub fn notification_input(&self) -> String {
+        let Trigger::Notification { app, title, body } = self else {
+            return String::new();
+        };
+        [("app", app), ("titulo", title), ("texto", body)]
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Confere horário, intervalo, nome do evento e filtros.
     pub fn validate(&self) -> Result<()> {
         match self {
             Trigger::Event { event } => validate_name(event).context("evento inválido"),
+            Trigger::Notification { app, title, body } => {
+                for filter in [app, title, body].into_iter().filter(|f| !f.is_empty()) {
+                    filter_regex(filter).with_context(|| format!("filtro inválido: {filter}"))?;
+                }
+                Ok(())
+            }
             Trigger::Daily { at, .. } => parse_clock(at).map(|_| ()),
             Trigger::Interval { every } => {
                 if parse_duration(every)?.as_secs() < 60 {
@@ -222,8 +289,23 @@ impl fmt::Display for Trigger {
                 write!(f, "às {at} ({})", names.join(", "))
             }
             Trigger::Interval { every } => write!(f, "a cada {every}"),
+            Trigger::Notification { .. } => match self.notification_input() {
+                filters if filters.is_empty() => write!(f, "qualquer notificação"),
+                filters => write!(f, "notificação {filters}"),
+            },
         }
     }
+}
+
+/// Valores da notificação para os parâmetros da rotina.
+pub fn notification_args(notification: &Notification) -> Vec<Arg> {
+    let values = [&notification.app, &notification.title, &notification.body];
+    NOTIFICATION_PARAMS.iter().zip(values).map(|(name, value)| (name.to_string(), value.clone())).collect()
+}
+
+/// Filtro de notificação: regex sem diferenciar maiúsculas.
+fn filter_regex(filter: &str) -> Result<Regex, regex::Error> {
+    RegexBuilder::new(filter).case_insensitive(true).build()
 }
 
 impl Config {
@@ -329,15 +411,18 @@ impl Config {
     }
 }
 
+/// Itens `chave` ou `chave=valor` separados por vírgula.
+fn key_values(raw: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
+    raw.split(',').map(str::trim).filter(|part| !part.is_empty()).map(|part| match part.split_once('=') {
+        Some((key, value)) => (key.trim(), Some(value.trim())),
+        None => (part, None),
+    })
+}
+
 /// Lê `pessoa, mensagem=padrão` (vírgulas separam os parâmetros).
 pub fn parse_params(raw: &str) -> Vec<Param> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| match part.split_once('=') {
-            Some((name, default)) => Param { name: name.trim().to_string(), default: Some(default.trim().to_string()) },
-            None => Param { name: part.to_string(), default: None },
-        })
+    key_values(raw)
+        .map(|(name, default)| Param { name: name.to_string(), default: default.map(str::to_string) })
         .collect()
 }
 
@@ -389,6 +474,33 @@ mod tests {
         assert!(routine.validate().is_err(), "agendada precisa de padrão");
         routine.params = parse_params("repeat=1");
         assert!(routine.validate().is_err(), "nome reservado");
+    }
+
+    #[test]
+    fn notification_trigger_filters_and_fills_params() {
+        let trigger = Trigger::parse_notification("app=teams, título=erick").unwrap();
+        assert_eq!(trigger.notification_input(), "app=teams, titulo=erick");
+        assert_eq!(trigger.to_string(), "notificação app=teams, titulo=erick");
+        let teams = Notification {
+            app: "com.github.IsmaelMartinez.teams_for_linux".into(),
+            title: "Erick Silva".into(),
+            body: "safe?".into(),
+        };
+        assert!(trigger.catches(&teams));
+        assert!(!trigger.catches(&Notification { title: "Ana".into(), ..teams.clone() }));
+        assert!(Trigger::parse_notification("").unwrap().catches(&teams), "sem filtro aceita tudo");
+        assert!(Trigger::parse_notification("app=(").is_err(), "regex inválida");
+        assert!(Trigger::parse_notification("de=erick").is_err(), "filtro desconhecido");
+
+        let mut routine = Routine::new("responde");
+        routine.params = parse_params("titulo, texto");
+        routine.steps = vec!["type {titulo}: {texto}".into()];
+        routine.triggers.push(trigger);
+        routine.validate().unwrap();
+        let args = notification_args(&teams);
+        assert_eq!(routine.bind(&args[1..]).unwrap()[0].1, "Erick Silva");
+        routine.triggers.push(Trigger::Event { event: "ping".into() });
+        assert!(routine.validate().is_err(), "evento não preenche titulo");
     }
 
     const SAMPLE: &str = r#"

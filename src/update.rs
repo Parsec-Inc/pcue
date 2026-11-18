@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::constants::{UPDATE_CHECKSUMS, UPDATE_REPO};
 use crate::platform;
+use crate::utils::in_background;
 
 /// Release publicada, com os arquivos para baixar.
 #[derive(Debug, Clone, Deserialize)]
@@ -63,16 +64,6 @@ pub fn install_in_background(release: Release) -> mpsc::Receiver<UpdateEvent> {
             Err(err) => UpdateEvent::Failed(format!("{err:#}")),
         })
     })
-}
-
-fn in_background(work: impl FnOnce() -> Option<UpdateEvent> + Send + 'static) -> mpsc::Receiver<UpdateEvent> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        if let Some(event) = work() {
-            let _ = sender.send(event);
-        }
-    });
-    receiver
 }
 
 /// `pcue update`: mostra ou instala a versão nova.

@@ -60,4 +60,21 @@ pub enum RawInput {
 }
 
 /// Observador de eventos do sistema, rodado numa thread pelo daemon.
-pub type EventSource = (&'static str, fn(Sender<String>) -> anyhow::Result<()>);
+pub type EventSource = (&'static str, fn(Sender<Event>) -> anyhow::Result<()>);
+
+/// Algo que o daemon observou.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Event {
+    /// Evento pelo nome: embutido ou de `pcue emit`.
+    Named(String),
+    #[cfg_attr(windows, allow(dead_code))]
+    Notification(Notification),
+}
+
+/// Notificação de um aplicativo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Notification {
+    pub app: String,
+    pub title: String,
+    pub body: String,
+}

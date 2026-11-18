@@ -55,7 +55,7 @@ acompanhamento ao vivo das execuções.
 | ⏺️ **Gravação inteligente** | percebe app abrindo, foco e troca de workspace: grava `launch`, `focus` e `workspace` em vez das teclas, e você revisa cada trecho antes de salvar |
 | 🖱️ **Cliques relativos** | cliques ficam relativos à janela, mesmo com várias janelas da mesma class |
 | 🔒 **Senhas fora da gravação** | `SUPER+F9` pausa e retoma, `SUPER+F10` encerra |
-| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, horário diário e intervalo |
+| ⚡ **Gatilhos** | `login`, `lock`, `unlock`, `resume`, `monitor_added`, `monitor_removed`, eventos próprios via `pcue emit`, notificação de app (Linux), horário diário e intervalo |
 | 🪟 **Linux e Windows** | mesma config e mesma TUI; no Windows `workspace=N` é o monitor N |
 | 🧠 **Passos espertos** | `optional`, `repeat=N`, `if_window=`, `unless_window=` e `call outra_rotina` |
 | 🐞 **Depuração** | rodar só um passo, rodar a partir de um passo, acompanhar e interromper execuções |
@@ -228,7 +228,38 @@ Ao rodar pela TUI, ela pergunta cada valor (lembrando o último usado). Fora
 dela: `pcue run teams-msg pessoa=erick` (bom para um atalho do Hyprland) ou,
 dentro de outra rotina, `call teams-msg pessoa=erick`. Parâmetros sem padrão
 são obrigatórios; rotina agendada precisa de padrão em todos, porque o daemon
-roda sem perguntar.
+roda sem perguntar (exceto os que o gatilho preenche, como os da
+notificação).
+
+### Gatilho por notificação
+
+No Linux, uma rotina pode disparar quando um app notifica, por exemplo ao
+chegar mensagem no Teams. Em `a` (gatilho) escolha **notificação** e informe
+os filtros: `app=teams, titulo=erick, texto=urgente`. Cada filtro é uma regex
+sem diferenciar maiúsculas, e filtro vazio aceita tudo. `Ctrl+G` no campo
+captura a próxima notificação que chegar e preenche app e título.
+
+| Filtro | O que é | No Teams |
+|---|---|---|
+| `app` | nome do app ou o `desktop-entry` do flatpak | `com.github.IsmaelMartinez.teams_for_linux` |
+| `titulo` | título da notificação | quem mandou (ou o nome do grupo) |
+| `texto` | corpo da notificação | a mensagem |
+
+A rotina recebe os valores nos parâmetros `app`, `titulo` e `texto`, se os
+declarar (com `P`). Eles não precisam de padrão, porque o gatilho os preenche:
+
+```toml
+[[routine]]
+name = "responde-erick"
+params = [{ name = "titulo" }]
+triggers = [{ type = "notification", app = "teams", title = "erick" }]
+steps = ["focus class=teams", "key CTRL+ALT+E", "type {titulo}", "key RETURN", "type \"já vejo!\"", "key RETURN"]
+```
+
+O daemon lê as notificações pelo D-Bus da sessão e não grava o conteúdo no
+log. Notificações do próprio pcue são ignoradas, e a mesma notificação
+repetida em menos de 2 s dispara uma vez só. Se o Teams estiver configurado
+para esconder a prévia da mensagem, `texto` chega vazio.
 
 `focus` espera a janela existir e foca nela, trocando de workspace se
 precisar. É mais robusto que `key SUPER+N`, que depende de onde o foco está.

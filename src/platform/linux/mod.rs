@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
-pub use events::event_sources;
+pub use events::{event_sources, watch_notifications};
 pub use input::VirtualInput;
 pub use install::{install, is_installed, uninstall};
 pub use listen::listen_input;

@@ -14,10 +14,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::win::{monitors, wide};
-use crate::platform::EventSource;
+use crate::platform::{Event, EventSource, Notification};
 
 /// Destino dos eventos da janela oculta.
-static EVENTS: Mutex<Option<Sender<String>>> = Mutex::new(None);
+static EVENTS: Mutex<Option<Sender<Event>>> = Mutex::new(None);
 /// Monitores conectados na última mudança de tela.
 static MONITORS: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,7 +27,7 @@ pub fn event_sources() -> Vec<EventSource> {
 }
 
 /// Janela oculta que recebe as mensagens de sessão, energia e tela.
-fn watch_session(sender: Sender<String>) -> Result<()> {
+fn watch_session(sender: Sender<Event>) -> Result<()> {
     *EVENTS.lock().expect("trava dos eventos") = Some(sender);
     MONITORS.store(monitors().len(), Ordering::SeqCst);
     let class = wide("pcue-events");
@@ -90,7 +90,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         && let Ok(events) = EVENTS.lock()
         && let Some(sender) = events.as_ref()
     {
-        let _ = sender.send(event.to_string());
+        let _ = sender.send(Event::Named(event.to_string()));
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Notificações de apps ainda não são lidas no Windows.
+pub fn watch_notifications(_on: impl FnMut(Notification) -> bool) -> Result<()> {
+    bail!("gatilho por notificação só funciona no Linux por enquanto")
 }

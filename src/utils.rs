@@ -7,6 +7,17 @@ use anyhow::{Context, Result};
 use crate::constants::{CONFIG_FILE, HISTORY_FILE, LOG_FILE};
 use crate::platform;
 
+/// Roda `work` numa thread; o resultado, se houver, chega pelo canal.
+pub fn in_background<T: Send + 'static>(work: impl FnOnce() -> Option<T> + Send + 'static) -> std::sync::mpsc::Receiver<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(value) = work() {
+            let _ = sender.send(value);
+        }
+    });
+    receiver
+}
+
 pub use crate::platform::{notify, runtime_dir};
 
 /// Diretório home do usuário.

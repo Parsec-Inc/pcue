@@ -19,8 +19,8 @@ use crate::recorder::{self, RecordEvent};
 use crate::runner::{Selection, spawn_run};
 use crate::schedule::parse_daily_input;
 use crate::script::{Arg, SYNTAX, is_comment, parse_line};
-use crate::utils::{expand_home, log_path, runtime_dir};
-use crate::platform::{self as install, Desktop};
+use crate::utils::{expand_home, in_background, log_path, runtime_dir};
+use crate::platform::{self as install, Desktop, Notification};
 use crate::update::{self, Release, UpdateEvent};
 use crate::{boot, capture, daemon};
 
@@ -109,6 +109,7 @@ pub enum InputPurpose {
     Daily(Option<usize>),
     Interval(Option<usize>),
     CustomEvent(Option<usize>),
+    Notification(Option<usize>),
     Export,
     Import,
     Params,
@@ -217,6 +218,8 @@ pub struct App {
     /// Release mais nova que a atual, se houver.
     pub update: Option<Release>,
     updates: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
+    /// Próxima notificação sendo capturada para o filtro do gatilho.
+    capture: Option<std::sync::mpsc::Receiver<Result<Notification>>>,
     pub filter: Option<Filter>,
     pub recording: Option<Recording>,
     pub slides: Slides,
@@ -262,6 +265,7 @@ impl App {
             manager: install::manager_name(),
             update: None,
             updates: Some(update::check_in_background()),
+            capture: None,
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -343,6 +347,7 @@ impl App {
     pub fn refresh(&mut self) {
         self.poll_recording();
         self.poll_update();
+        self.poll_capture();
         if self.last_progress.elapsed() >= PROGRESS_EVERY {
             self.last_progress = Instant::now();
             self.running = progress::running();
@@ -809,6 +814,7 @@ impl App {
                 ("evento".into(), "login, bloqueio, desbloqueio, suspensão, monitor...".into()),
                 ("diário".into(), "num horário, todos os dias ou em dias escolhidos".into()),
                 ("intervalo".into(), "a cada N minutos ou horas".into()),
+                ("notificação".into(), "quando um app notifica (Teams, WhatsApp...)".into()),
             ],
             selected: 0,
             purpose: PickPurpose::TriggerKind(editing),
@@ -854,6 +860,7 @@ impl App {
                 &every,
                 InputPurpose::Interval(Some(index)),
             ),
+            Trigger::Notification { .. } => self.open_notification_input(Some(index), &trigger.notification_input()),
         }
     }
 
@@ -987,6 +994,12 @@ impl App {
                 ..
             } => match key.code {
                 KeyCode::Esc => self.modal = self.stashed_review.take(),
+                KeyCode::Char('g')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(purpose, InputPurpose::Notification(_)) =>
+                {
+                    self.capture_notification();
+                }
                 KeyCode::Enter => {
                     let (purpose, value) = (*purpose, input.value().trim().to_string());
                     let opened = self.modal_at;
@@ -1063,6 +1076,7 @@ impl App {
                     },
                 )?;
             }
+            InputPurpose::Notification(editing) => self.save_trigger(editing, Trigger::parse_notification(value)?)?,
             InputPurpose::Params => {
                 let params = parse_params(value);
                 self.mutate_routine(|r| r.params = params)?;
@@ -1118,7 +1132,8 @@ impl App {
             PickPurpose::TriggerKind(editing) => match index {
                 0 => self.pick_event(editing),
                 1 => self.open_input("Horário diário", DAILY_HINT, "", InputPurpose::Daily(editing)),
-                _ => self.open_input("Intervalo", INTERVAL_HINT, "", InputPurpose::Interval(editing)),
+                2 => self.open_input("Intervalo", INTERVAL_HINT, "", InputPurpose::Interval(editing)),
+                _ => self.open_notification_input(editing, ""),
             },
             PickPurpose::Event(editing) if index >= BUILTIN_EVENTS.len() => self.open_input(
                 "Evento personalizado",
@@ -1252,6 +1267,46 @@ impl App {
                 self.info(format!("atualizado para {version}; reabra o pcue"));
             }
             UpdateEvent::Failed(err) => self.error(format!("atualização falhou: {err}")),
+        }
+    }
+
+    fn open_notification_input(&mut self, editing: Option<usize>, value: &str) {
+        self.open_input("Notificação", NOTIFICATION_HINT, value, InputPurpose::Notification(editing));
+    }
+
+    /// Escuta a próxima notificação em segundo plano para preencher o filtro.
+    fn capture_notification(&mut self) {
+        if self.capture.is_some() {
+            return;
+        }
+        self.capture = Some(in_background(|| {
+            let mut caught = None;
+            let watched = install::watch_notifications(|notification| {
+                caught = Some(notification);
+                false
+            });
+            Some(watched.and_then(|()| caught.context("o monitor de notificações parou")))
+        }));
+        self.info("aguardando a próxima notificação…");
+    }
+
+    /// Preenche o filtro com o app e o título da notificação capturada.
+    fn poll_capture(&mut self) {
+        let Some(result) = self.capture.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.capture = None;
+        let notification = match result {
+            Ok(notification) => notification,
+            Err(err) => return self.error(format!("captura falhou: {err:#}")),
+        };
+        if let Some(Modal::Input { input, purpose: InputPurpose::Notification(_), error, .. }) = &mut self.modal {
+            let filter = Trigger::Notification {
+                app: regex::escape(&notification.app),
+                title: regex::escape(&notification.title),
+                body: String::new(),
+            };
+            *input = TextInput::with_value(&filter.notification_input());
+            *error = None;
+            self.info(format!("notificação de {} capturada", notification.app));
         }
     }
 
@@ -1605,4 +1660,6 @@ fn moved(index: usize, len: usize, key: KeyCode) -> Option<usize> {
 const DAILY_HINT: &str = "HH:MM e dias opcionais, ex.: 09:00 seg,ter,qua,qui,sex";
 const PARAMS_HINT: &str =
     "nomes separados por vírgula, padrão opcional: pessoa, mensagem=oi · nos passos: {pessoa} · fora: pcue run rotina pessoa=erick";
+const NOTIFICATION_HINT: &str =
+    "app=teams, titulo=Erick, texto=... (regex, vazio aceita tudo) · Ctrl+G captura a próxima";
 const INTERVAL_HINT: &str = "ex.: 30m, 2h ou 1.5h (mínimo 1m)";
