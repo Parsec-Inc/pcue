@@ -238,6 +238,23 @@ pub fn shell(command: &str, background: bool) -> Command {
     shell
 }
 
+/// Inicia o daemon fora da sessão do terminal, sem repetir o evento login.
+pub fn start_daemon(exe: &std::path::Path) -> Result<()> {
+    let status = Command::new("setsid")
+        .arg("-f")
+        .arg(exe)
+        .args(["daemon", "--restarted"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("falha ao iniciar o daemon")?;
+    if !status.success() {
+        bail!("setsid falhou ao iniciar o daemon");
+    }
+    Ok(())
+}
+
 /// Abre o comando fora da sessão do terminal, sem depender do compositor.
 pub fn spawn_detached(command: &str) -> Result<()> {
     Command::new("setsid")

@@ -113,7 +113,7 @@ fn draw_brand(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Line::raw("")
         },
-        chip(app.daemon_up, "daemon ativo", "daemon parado", mix(GREEN_LOW, GREEN_HIGH, pulse)),
+        chip(app.daemon_up, "daemon ativo", "daemon parado · B inicia", mix(GREEN_LOW, GREEN_HIGH, pulse)),
         chip(app.installed, "no autostart", "fora do autostart", OK),
         chip(app.manager.is_some(), app.manager.unwrap_or("-"), "sem gerenciador de janelas", OK),
     ];
@@ -1081,4 +1081,5 @@ const HELP_GENERAL: &[&str] = &[
     "  nos campos de texto, Ctrl+Y copia o valor inteiro para a área de transferência",
     "  P parâmetros: {nome} nos passos; ao rodar a TUI pergunta os valores (pcue run rotina nome=valor, call rotina nome=valor)",
     "  / busca · D duplica · X exporta · i importa · H histórico · L log · I autostart · U atualiza · q sai",
+    "  B inicia o daemon (ou reinicia com o binário desta TUI) · pcue daemon start|stop|restart",
 ];

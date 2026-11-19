@@ -45,7 +45,7 @@ pub fn run_daemon(restarted: bool) -> Result<()> {
     let path = config_path()?;
     let mut daemon = Daemon::new(path)?;
     if restarted {
-        log("daemon reiniciado com o binário novo");
+        log("daemon iniciado sem repetir o evento login");
     } else {
         log("daemon iniciado");
         std::thread::sleep(Duration::from_millis(daemon.config.settings.startup_delay_ms));
@@ -105,19 +105,65 @@ pub fn is_running() -> bool {
     daemon_endpoint().is_ok_and(|name| Stream::connect(name).is_ok())
 }
 
+/// Inicia o daemon em segundo plano com este binário.
+pub fn start() -> Result<&'static str> {
+    if is_running() {
+        bail!("o daemon já está rodando");
+    }
+    platform::start_daemon(&std::env::current_exe()?)?;
+    wait_until(true)?;
+    Ok("daemon iniciado")
+}
+
+/// Pede ao daemon que saia e espera ele parar.
+pub fn stop() -> Result<&'static str> {
+    if send("stop")? != "ok" {
+        bail!("este daemon é de uma versão sem `stop`; encerre o processo (pkill -f 'pcue daemon') e inicie de novo");
+    }
+    wait_until(false)?;
+    Ok("daemon parado")
+}
+
+/// Para o daemon, se estiver rodando, e inicia com este binário.
+pub fn restart() -> Result<&'static str> {
+    if is_running() {
+        stop()?;
+    }
+    start()?;
+    Ok("daemon reiniciado")
+}
+
+/// Espera o daemon ficar no estado pedido.
+fn wait_until(running: bool) -> Result<()> {
+    let deadline = Instant::now() + DAEMON_HANDOFF;
+    while is_running() != running {
+        if Instant::now() >= deadline {
+            bail!("o daemon não {} a tempo; veja o log (pcue paths)", if running { "subiu" } else { "parou" });
+        }
+        std::thread::sleep(DAEMON_TICK / 4);
+    }
+    Ok(())
+}
+
 /// Envia um evento ao daemon.
 pub fn emit(event: &str) -> Result<()> {
     validate_name(event)?;
-    let stream = Stream::connect(daemon_endpoint()?)
-        .map_err(|_| anyhow!("daemon não está rodando (pcue daemon)"))?;
-    let mut reader = BufReader::new(stream);
-    writeln!(reader.get_mut(), "emit {event}")?;
-    let mut reply = String::new();
-    reader.read_line(&mut reply)?;
-    if reply.trim() != "ok" {
-        bail!("daemon recusou: {}", reply.trim());
+    let reply = send(&format!("emit {event}"))?;
+    if reply != "ok" {
+        bail!("daemon recusou: {reply}");
     }
     Ok(())
+}
+
+/// Manda um comando ao daemon e devolve a resposta.
+fn send(command: &str) -> Result<String> {
+    let stream = Stream::connect(daemon_endpoint()?)
+        .map_err(|_| anyhow!("daemon não está rodando (pcue daemon start)"))?;
+    let mut reader = BufReader::new(stream);
+    writeln!(reader.get_mut(), "{command}")?;
+    let mut reply = String::new();
+    reader.read_line(&mut reply)?;
+    Ok(reply.trim().to_string())
 }
 
 /// Próximo disparo de um gatilho de tempo.
@@ -361,6 +407,11 @@ fn serve_ipc(listener: Listener, sender: Sender<Event>) -> Result<()> {
                 "ok".to_string()
             }
             _ if line.trim() == "ping" => "ok".to_string(),
+            _ if line.trim() == "stop" => {
+                let _ = writeln!(reader.get_mut(), "ok");
+                log("daemon parado pelo comando stop");
+                std::process::exit(0);
+            }
             _ => format!("comando inválido: {}", line.trim()),
         };
         let _ = writeln!(reader.get_mut(), "{reply}");
