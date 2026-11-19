@@ -136,6 +136,7 @@ pub enum ConfirmAction {
     DeleteTrigger(usize),
     MakeFree,
     Update,
+    RestartDaemon,
     Discard,
     Quit,
     SaveAndRun(Selection),
@@ -225,6 +226,7 @@ pub struct App {
     updates: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     /// Próxima notificação sendo capturada para o filtro do gatilho.
     capture: Option<std::sync::mpsc::Receiver<Result<Event>>>,
+    daemon_job: Option<std::sync::mpsc::Receiver<Result<&'static str>>>,
     pub filter: Option<Filter>,
     pub recording: Option<Recording>,
     pub slides: Slides,
@@ -271,6 +273,7 @@ impl App {
             update: None,
             updates: Some(update::check_in_background()),
             capture: None,
+            daemon_job: None,
             filter: None,
             recording: None,
             slides: Slides::default(),
@@ -353,6 +356,7 @@ impl App {
         self.poll_recording();
         self.poll_update();
         self.poll_capture();
+        self.poll_daemon_job();
         if self.last_progress.elapsed() >= PROGRESS_EVERY {
             self.last_progress = Instant::now();
             self.running = progress::running();
@@ -517,6 +521,7 @@ impl App {
             KeyCode::Char('L') => self.open_log(),
             KeyCode::Char('H') => self.open_history(None),
             KeyCode::Char('I') => self.toggle_install(),
+            KeyCode::Char('B') => self.ask_daemon(),
             KeyCode::Char('U') => self.ask_update(),
             KeyCode::Tab | KeyCode::Right => self.cycle_focus(true),
             KeyCode::BackTab | KeyCode::Left => self.cycle_focus(false),
@@ -1259,6 +1264,7 @@ impl App {
                 self.run_selected(selection);
                 return;
             }
+            ConfirmAction::RestartDaemon => return self.run_daemon_job("reiniciando o daemon...", daemon::restart),
             ConfirmAction::Update => {
                 if let Some(release) = self.update.clone() {
                     self.info(format!("baixando pcue {}...", release.version));
@@ -1492,6 +1498,34 @@ impl App {
         let total = steps.len();
         match self.mutate_routine(|r| r.steps.extend(steps)) {
             Ok(()) => self.info(format!("{total} janela(s) capturada(s) como `launch`")),
+            Err(err) => self.error(format!("{err:#}")),
+        }
+    }
+
+    /// Inicia o daemon parado; se já estiver rodando, pergunta antes de reiniciar.
+    fn ask_daemon(&mut self) {
+        if self.daemon_job.is_some() {
+            return;
+        }
+        if self.daemon_up {
+            self.confirm("Reiniciar o daemon com o binário desta TUI?".into(), ConfirmAction::RestartDaemon);
+        } else {
+            self.run_daemon_job("iniciando o daemon...", daemon::start);
+        }
+    }
+
+    /// Roda o controle do daemon numa thread, que espera ele mudar de estado.
+    fn run_daemon_job(&mut self, message: &str, job: fn() -> Result<&'static str>) {
+        self.info(message.to_string());
+        self.daemon_job = Some(in_background(move || Some(job())));
+    }
+
+    fn poll_daemon_job(&mut self) {
+        let Some(result) = self.daemon_job.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.daemon_job = None;
+        self.daemon_up = daemon::is_running();
+        match result {
+            Ok(message) => self.info(message),
             Err(err) => self.error(format!("{err:#}")),
         }
     }

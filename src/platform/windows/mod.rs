@@ -307,6 +307,19 @@ pub fn restart_self(exe: &Path, args: &[&str]) -> anyhow::Error {
     }
 }
 
+/// Inicia o daemon sem janela de console, sem repetir o evento login.
+pub fn start_daemon(exe: &Path) -> Result<()> {
+    Command::new(exe)
+        .args(["daemon", "--restarted"])
+        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("falha ao iniciar o daemon")?;
+    Ok(())
+}
+
 /// Se o daemon abriu com janela de console, relança sem ela; `true` se relançou.
 pub fn detach_daemon(args: &[&str]) -> Result<bool> {
     if !win::has_console_window() {

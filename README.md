@@ -144,6 +144,7 @@ pcue run trabalho    # roda uma rotina agora
 pcue run trabalho --from 4   # a partir da linha 4
 pcue run trabalho --only 4   # só a linha 4
 pcue emit cafe       # dispara o evento personalizado "cafe"
+pcue daemon start    # inicia o daemon em segundo plano (stop para, restart reinicia)
 pcue record trabalho # grava pelo terminal e acrescenta à rotina
 pcue capture -w 2    # gera passos launch das janelas abertas no workspace 2
 pcue list            # lista as rotinas
@@ -166,7 +167,7 @@ salvo.
 | Onde | Teclas |
 |---|---|
 | Campos de texto | `Ctrl+Y` (ou o botão copiar) copia o valor inteiro para a área de transferência · `Ctrl+A`/`Ctrl+E` início/fim · `Ctrl+U` apaga até o cursor |
-| Geral | `S`/`Ctrl+S` salva · `u` descarta as alterações · `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `U` atualiza · `?` ajuda · `q` sai |
+| Geral | `S`/`Ctrl+S` salva · `u` descarta as alterações · `Tab`/`←`/`→` troca painel · `H` histórico · `L` log · `I` autostart · `B` inicia ou reinicia o daemon · `U` atualiza · `?` ajuda · `q` sai |
 | Rotinas | `Enter` roda · `s` para · `n` nova · `D` duplica · `r` renomeia · `d` apaga · `espaço` ativa/desativa · `t` livre/agendada · `/` busca · `X` exporta · `i` importa |
 | Gatilhos | `a` adiciona · `Enter` edita · `d` apaga |
 | Passos | `a` adiciona · `Enter` edita · `x` roda só este · `f` roda daqui · `J`/`K` move · `C` limpa todos (pede confirmação) · `R` grava · `c` captura janelas · `E` abre no `$EDITOR` |

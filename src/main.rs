@@ -42,9 +42,11 @@ enum Command {
     Tui,
     /// Processo de fundo que dispara as rotinas agendadas
     Daemon {
-        /// Reinício após atualização do binário: não repete o evento login
+        /// Não dispara o evento login (reinício ou início manual)
         #[arg(long, hide = true)]
         restarted: bool,
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
     },
     /// Executa uma rotina agora
     Run {
@@ -100,6 +102,17 @@ enum Command {
     },
 }
 
+/// Controle do daemon em segundo plano.
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Inicia em segundo plano com este binário
+    Start,
+    /// Para o daemon que está rodando
+    Stop,
+    /// Para e inicia de novo com este binário
+    Restart,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     #[cfg(target_os = "linux")]
@@ -107,7 +120,16 @@ fn main() -> Result<()> {
     let path = config_path()?;
     match cli.command.unwrap_or(Command::Tui) {
         Command::Tui => tui::run(path),
-        Command::Daemon { restarted } => daemon::run_daemon(restarted),
+        Command::Daemon { restarted, action: None } => daemon::run_daemon(restarted),
+        Command::Daemon { action: Some(action), .. } => {
+            let message = match action {
+                DaemonAction::Start => daemon::start()?,
+                DaemonAction::Stop => daemon::stop()?,
+                DaemonAction::Restart => daemon::restart()?,
+            };
+            println!("{message}");
+            Ok(())
+        }
         Command::Run {
             routine,
             trigger,
