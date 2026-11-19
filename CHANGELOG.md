@@ -1,3 +1,13 @@
+## 0.9.0 (2026-11-19)
+
+### Feat
+
+- **daemon**: pcue daemon start/stop/restart e tecla B na TUI para iniciar ou reiniciar
+
+### Refactor
+
+- **daemon**: emit e stop pelo mesmo envio de comando
+
 ## 0.8.0 (2026-11-18)
 
 ### Feat
