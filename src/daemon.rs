@@ -117,12 +117,7 @@ pub fn start() -> Result<&'static str> {
 
 /// Pede ao daemon que saia e espera ele parar.
 pub fn stop() -> Result<&'static str> {
-    let stream = Stream::connect(daemon_endpoint()?).map_err(|_| anyhow!("o daemon não está rodando"))?;
-    let mut reader = BufReader::new(stream);
-    writeln!(reader.get_mut(), "stop")?;
-    let mut reply = String::new();
-    reader.read_line(&mut reply)?;
-    if reply.trim() != "ok" {
+    if send("stop")? != "ok" {
         bail!("este daemon é de uma versão sem `stop`; encerre o processo (pkill -f 'pcue daemon') e inicie de novo");
     }
     wait_until(false)?;
@@ -153,16 +148,22 @@ fn wait_until(running: bool) -> Result<()> {
 /// Envia um evento ao daemon.
 pub fn emit(event: &str) -> Result<()> {
     validate_name(event)?;
-    let stream = Stream::connect(daemon_endpoint()?)
-        .map_err(|_| anyhow!("daemon não está rodando (pcue daemon)"))?;
-    let mut reader = BufReader::new(stream);
-    writeln!(reader.get_mut(), "emit {event}")?;
-    let mut reply = String::new();
-    reader.read_line(&mut reply)?;
-    if reply.trim() != "ok" {
-        bail!("daemon recusou: {}", reply.trim());
+    let reply = send(&format!("emit {event}"))?;
+    if reply != "ok" {
+        bail!("daemon recusou: {reply}");
     }
     Ok(())
+}
+
+/// Manda um comando ao daemon e devolve a resposta.
+fn send(command: &str) -> Result<String> {
+    let stream = Stream::connect(daemon_endpoint()?)
+        .map_err(|_| anyhow!("daemon não está rodando (pcue daemon start)"))?;
+    let mut reader = BufReader::new(stream);
+    writeln!(reader.get_mut(), "{command}")?;
+    let mut reply = String::new();
+    reader.read_line(&mut reply)?;
+    Ok(reply.trim().to_string())
 }
 
 /// Próximo disparo de um gatilho de tempo.
